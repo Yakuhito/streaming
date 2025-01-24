@@ -1,7 +1,11 @@
-use chia::puzzles::{cat::CatSolution, CoinProof, LineageProof};
+use chia::puzzles::{
+    cat::{CatArgs, CatSolution},
+    CoinProof, LineageProof,
+};
 use chia_protocol::{Bytes32, Coin};
-use chia_wallet_sdk::{CatLayer, DriverError, Layer, Spend, SpendContext};
-use clvmr::NodePtr;
+use chia_wallet_sdk::{CatLayer, DriverError, Layer, Puzzle, Spend, SpendContext};
+use clvm_traits::FromClvm;
+use clvmr::{Allocator, NodePtr};
 
 use crate::{StreamLayer, StreamPuzzleSolution};
 
@@ -23,7 +27,6 @@ impl StreamedCat {
         coin: Coin,
         asset_id: Bytes32,
         proof: LineageProof,
-        inner_puzzle_hash: Bytes32,
         recipient: Bytes32,
         end_time: u64,
         last_payment_time: u64,
@@ -32,7 +35,9 @@ impl StreamedCat {
             coin,
             asset_id,
             proof,
-            inner_puzzle_hash,
+            inner_puzzle_hash: StreamLayer::new(recipient, end_time, last_payment_time)
+                .puzzle_hash()
+                .into(),
             recipient,
             end_time,
             last_payment_time,
@@ -81,5 +86,48 @@ impl StreamedCat {
         let solution = self.construct_solution(ctx, payment_time)?;
 
         ctx.spend(self.coin, Spend::new(puzzle, solution))
+    }
+
+    pub fn from_parent_spend(
+        allocator: &mut Allocator,
+        parent_coin: Coin,
+        parent_puzzle: Puzzle,
+        parent_solution: NodePtr,
+    ) -> Result<Option<Self>, DriverError> {
+        let Some(layers) = CatLayer::<StreamLayer>::parse_puzzle(allocator, parent_puzzle)? else {
+            return Ok(None);
+        };
+
+        let proof = LineageProof {
+            parent_parent_coin_info: parent_coin.parent_coin_info,
+            parent_inner_puzzle_hash: layers.inner_puzzle.puzzle_hash().into(),
+            parent_amount: parent_coin.amount,
+        };
+
+        let parent_solution =
+            CatSolution::<StreamPuzzleSolution>::from_clvm(allocator, parent_solution)?;
+
+        let new_amount = parent_coin.amount
+            * (parent_solution.inner_puzzle_solution.payment_time
+                - layers.inner_puzzle.last_payment_time)
+            / (layers.inner_puzzle.end_time - layers.inner_puzzle.last_payment_time);
+
+        let new_inner_layer = StreamLayer::new(
+            layers.inner_puzzle.recipient,
+            layers.inner_puzzle.end_time,
+            parent_solution.inner_puzzle_solution.payment_time,
+        );
+        let new_puzzle_hash =
+            CatArgs::curry_tree_hash(layers.asset_id, new_inner_layer.puzzle_hash());
+
+        Ok(Some(Self::new(
+            Coin::new(parent_coin.coin_id(), new_puzzle_hash.into(), new_amount),
+            layers.asset_id,
+            proof,
+            layers.inner_puzzle.recipient,
+            layers.inner_puzzle.end_time,
+            // last payment time should've been updated by the spend
+            parent_solution.inner_puzzle_solution.payment_time,
+        )))
     }
 }

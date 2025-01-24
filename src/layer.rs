@@ -86,6 +86,14 @@ impl StreamLayer {
             last_payment_time,
         }
     }
+
+    pub fn puzzle_hash(&self) -> TreeHash {
+        StreamPuzzle2ndCurryArgs::curry_tree_hash(
+            self.recipient,
+            self.end_time,
+            self.last_payment_time,
+        )
+    }
 }
 
 impl Layer for StreamLayer {
