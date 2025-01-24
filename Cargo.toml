@@ -1,0 +1,7 @@
+[package]
+name = "continuous-vesting"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chia-wallet-sdk = "0.20.0"
