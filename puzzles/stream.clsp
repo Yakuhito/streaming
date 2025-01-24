@@ -1,4 +1,4 @@
-; continuous_vesting.clsp by yakuhito
+; stream.clsp by yakuhito
 
 ;; Used to 'stream' CAT/XCH to a user over time.
 
@@ -14,7 +14,7 @@
     (include condition_codes.clsp)
     (include curry.clsp)
 
-    (defun add_create_coins (RECIPIENT SELF_HASH my_amount to_pay base_conditions)
+    (defun add_create_coins (RECIPIENT SELF_HASH my_amount to_pay payment_time base_conditions)
         (c
             (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
             (c
@@ -38,9 +38,16 @@
             SELF_HASH
             (/ (* my_amount (- payment_time LAST_PAYMENT_TIME)) (- END_TIME LAST_PAYMENT_TIME))
             my_amount
+            payment_time
             (list
                 (list ASSERT_SECONDS_ABSOLUTE payment_time)
                 (list ASSERT_MY_AMOUNT my_amount)
+                (list
+                    RECEIVE_MESSAGE
+                    ; 23 - sender puzzle hash, receiver coin id
+                    payment_time ; message
+                    RECIPIENT ; sender puzzle hash
+                )
             )
         )
         ; else
