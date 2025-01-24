@@ -1,0 +1,49 @@
+; continuous_vesting.clsp by yakuhito
+
+;; Used to 'stream' CAT/XCH to a user over time.
+
+(mod (
+    RECIPIENT
+    END_TIME
+    ; 2nd curry
+    SELF_HASH
+    LAST_PAYMENT_TIME
+    my_amount
+    payment_time
+)
+    (include condition_codes.clsp)
+    (include curry.clsp)
+
+    (defun add_create_coins (RECIPIENT SELF_HASH my_amount to_pay base_conditions)
+        (c
+            (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
+            (c
+                (list
+                    CREATE_COIN
+                    (curry_hashes_inline SELF_HASH
+                        (sha256 1 SELF_HASH)
+                        (sha256 1 payment_time)
+                    )
+                    (- my_amount to_pay)
+                    (list RECIPIENT)
+                )
+                base_conditions
+            )
+        )
+    )
+
+    (if (> payment_time LAST_PAYMENT_TIME)
+        (add_create_coins
+            RECIPIENT
+            SELF_HASH
+            (/ (* my_amount (- payment_time LAST_PAYMENT_TIME)) (- END_TIME LAST_PAYMENT_TIME))
+            my_amount
+            (list
+                (list ASSERT_SECONDS_ABSOLUTE payment_time)
+                (list ASSERT_MY_AMOUNT my_amount)
+            )
+        )
+        ; else
+        (x)
+    )
+)
