@@ -10,3 +10,4 @@ clvm-traits = { version = "0.17.0", features = ["derive"] }
 clvm-utils = "0.17.0"
 hex-literal = "0.4.1"
 clvmr = "0.10.0"
+chia = "0.17.0"
