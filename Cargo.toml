@@ -1,5 +1,5 @@
 [package]
-name = "chia-streaming"
+name = "streaming"
 version = "0.1.0"
 edition = "2021"
 
@@ -10,6 +10,7 @@ clvm-utils = "0.17.0"
 hex-literal = "0.4.1"
 clvmr = "0.10.0"
 chia = "0.17.0"
+clap = { version = "4.5.27", features = ["derive"] }
 
 chia-wallet-sdk = { git = "https://github.com/xch-dev/chia-wallet-sdk.git", rev = "e638776544fd110426125193c373e3f77cf96e79" }
 
