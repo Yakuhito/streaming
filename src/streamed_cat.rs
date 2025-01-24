@@ -134,8 +134,12 @@ impl StreamedCat {
 
 #[cfg(test)]
 mod tests {
+    use chia::{bls::Signature, puzzles::standard::StandardArgs};
+    use chia_protocol::{Bytes, SpendBundle};
+    use chia_wallet_sdk::{test_secret_key, Cat, Conditions, Simulator, StandardLayer};
+    use clvm_traits::ToClvm;
     use clvm_utils::tree_hash;
-    use clvmr::serde::node_from_bytes;
+    use clvmr::serde::{node_from_bytes, node_to_bytes};
 
     use crate::{STREAM_PUZZLE, STREAM_PUZZLE_HASH};
 
@@ -147,5 +151,89 @@ mod tests {
 
         let ptr = node_from_bytes(&mut allocator, &STREAM_PUZZLE).unwrap();
         assert_eq!(tree_hash(&allocator, ptr), STREAM_PUZZLE_HASH);
+    }
+
+    #[test]
+    fn test_streamed_cat() -> anyhow::Result<()> {
+        let ctx = &mut SpendContext::new();
+        let mut sim = Simulator::new();
+
+        let claim_intervals = [1000, 2000, 500, 1000, 10];
+        let total_claim_time = claim_intervals.iter().sum::<u64>();
+
+        // Create CAT & launch vesting one
+        let user_sk = test_secret_key()?;
+        let user_p2 = StandardLayer::new(user_sk.public_key());
+        let user_puzzle_hash: Bytes32 = StandardArgs::curry_tree_hash(user_sk.public_key()).into();
+
+        let payment_cat_amount = 1000;
+        let (minter_sk, minter_pk, _minter_puzzle_hash, minter_coin) =
+            sim.new_p2(payment_cat_amount)?;
+        let minter_p2 = StandardLayer::new(minter_pk);
+
+        let streaming_inner_puzzle =
+            StreamLayer::new(user_puzzle_hash, total_claim_time + 1000, 1000);
+        let streaming_inner_puzzle_hash: Bytes32 = streaming_inner_puzzle.puzzle_hash().into();
+        let (issue_cat, eve_cat) = Cat::single_issuance_eve(
+            ctx,
+            minter_coin.coin_id(),
+            payment_cat_amount,
+            Conditions::new().create_coin(streaming_inner_puzzle_hash, payment_cat_amount, None),
+        )?;
+        minter_p2.spend(ctx, minter_coin, issue_cat)?;
+
+        let initial_vesting_cat = eve_cat.wrapped_child(user_puzzle_hash, payment_cat_amount);
+        sim.spend_coins(ctx.take(), &[minter_sk.clone()])?;
+
+        // spend streaming CAT
+        let mut streamed_cat = StreamedCat::new(
+            initial_vesting_cat.coin,
+            initial_vesting_cat.asset_id,
+            initial_vesting_cat.lineage_proof.unwrap(),
+            user_puzzle_hash,
+            total_claim_time + 1000,
+            1000,
+        );
+        sim.set_next_timestamp(1000)?;
+
+        for interval in claim_intervals.iter() {
+            /* Payment is always based on last block's timestamp */
+            sim.pass_time(*interval);
+            let simulator_time = sim.next_timestamp();
+            sim.new_transaction(SpendBundle::new(vec![], Signature::default()))?;
+
+            // to claim the payment, user needs to send a message to the streaming CAT
+            let user_coin = sim.new_coin(user_puzzle_hash, 0);
+            let message_to_send = simulator_time.to_clvm(&mut ctx.allocator)?;
+            let message_to_send = Bytes::from(node_to_bytes(&ctx.allocator, message_to_send)?);
+            let coin_id_ptr = streamed_cat.coin.coin_id().to_clvm(&mut ctx.allocator)?;
+            user_p2.spend(
+                ctx,
+                user_coin,
+                Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
+            )?;
+
+            streamed_cat.spend(ctx, simulator_time)?;
+
+            let spends = ctx.take();
+            let streamed_cat_spend = spends.last().unwrap().clone();
+            sim.spend_coins(spends, &[user_sk.clone()])?;
+
+            // set up for next iteration
+            let parent_puzzle = streamed_cat_spend
+                .puzzle_reveal
+                .to_clvm(&mut ctx.allocator)?;
+            let parent_puzzle = Puzzle::from_clvm(&ctx.allocator, parent_puzzle)?;
+            let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
+            streamed_cat = StreamedCat::from_parent_spend(
+                &mut ctx.allocator,
+                streamed_cat.coin,
+                parent_puzzle,
+                parent_solution,
+            )?
+            .unwrap();
+        }
+
+        Ok(())
     }
 }

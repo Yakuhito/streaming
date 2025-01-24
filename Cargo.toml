@@ -5,9 +5,13 @@ edition = "2021"
 
 [dependencies]
 chia-protocol = "0.17.0"
-chia-wallet-sdk = "0.20.0"
 clvm-traits = { version = "0.17.0", features = ["derive"] }
 clvm-utils = "0.17.0"
 hex-literal = "0.4.1"
 clvmr = "0.10.0"
 chia = "0.17.0"
+
+chia-wallet-sdk = { git = "https://github.com/xch-dev/chia-wallet-sdk.git", rev = "e638776544fd110426125193c373e3f77cf96e79" }
+
+[dev-dependencies]
+anyhow = "1.0.95"
