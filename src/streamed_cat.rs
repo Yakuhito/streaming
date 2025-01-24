@@ -134,8 +134,8 @@ impl StreamedCat {
 
 #[cfg(test)]
 mod tests {
-    use chia::{bls::Signature, puzzles::standard::StandardArgs};
-    use chia_protocol::{Bytes, SpendBundle};
+    use chia::puzzles::standard::StandardArgs;
+    use chia_protocol::Bytes;
     use chia_wallet_sdk::{test_secret_key, Cat, Conditions, Simulator, StandardLayer};
     use clvm_traits::ToClvm;
     use clvm_utils::tree_hash;
@@ -184,6 +184,7 @@ mod tests {
 
         let initial_vesting_cat = eve_cat.wrapped_child(user_puzzle_hash, payment_cat_amount);
         sim.spend_coins(ctx.take(), &[minter_sk.clone()])?;
+        sim.set_next_timestamp(1000 + claim_intervals[0])?;
 
         // spend streaming CAT
         let mut streamed_cat = StreamedCat::new(
@@ -194,17 +195,18 @@ mod tests {
             total_claim_time + 1000,
             1000,
         );
-        sim.set_next_timestamp(1000)?;
 
-        for interval in claim_intervals.iter() {
+        let mut claim_time = sim.next_timestamp();
+        for (i, _interval) in claim_intervals.iter().enumerate() {
+            println!("claim_time: {}", claim_time);
             /* Payment is always based on last block's timestamp */
-            sim.pass_time(*interval);
-            let simulator_time = sim.next_timestamp();
-            sim.new_transaction(SpendBundle::new(vec![], Signature::default()))?;
+            if i < claim_intervals.len() - 1 {
+                sim.pass_time(claim_intervals[i + 1]);
+            }
 
             // to claim the payment, user needs to send a message to the streaming CAT
             let user_coin = sim.new_coin(user_puzzle_hash, 0);
-            let message_to_send = simulator_time.to_clvm(&mut ctx.allocator)?;
+            let message_to_send = claim_time.to_clvm(&mut ctx.allocator)?;
             let message_to_send = Bytes::from(node_to_bytes(&ctx.allocator, message_to_send)?);
             let coin_id_ptr = streamed_cat.coin.coin_id().to_clvm(&mut ctx.allocator)?;
             user_p2.spend(
@@ -213,13 +215,16 @@ mod tests {
                 Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
             )?;
 
-            streamed_cat.spend(ctx, simulator_time)?;
+            streamed_cat.spend(ctx, claim_time)?;
 
             let spends = ctx.take();
             let streamed_cat_spend = spends.last().unwrap().clone();
             sim.spend_coins(spends, &[user_sk.clone()])?;
 
             // set up for next iteration
+            if i < claim_intervals.len() - 1 {
+                claim_time += claim_intervals[i + 1];
+            }
             let parent_puzzle = streamed_cat_spend
                 .puzzle_reveal
                 .to_clvm(&mut ctx.allocator)?;
