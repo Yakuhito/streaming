@@ -1,2 +1,2 @@
-# continuous-vesting
-Continuous vesting for Chia CATs
+# Streaming
+Streaming puzzle for Chia CATs

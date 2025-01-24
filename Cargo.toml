@@ -1,5 +1,5 @@
 [package]
-name = "continuous-vesting"
+name = "chia-streaming"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,3 +9,4 @@ chia-wallet-sdk = "0.20.0"
 clvm-traits = { version = "0.17.0", features = ["derive"] }
 clvm-utils = "0.17.0"
 hex-literal = "0.4.1"
+clvmr = "0.10.0"
