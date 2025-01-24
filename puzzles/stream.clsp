@@ -14,10 +14,11 @@
     (include condition_codes.clsp)
     (include curry.clsp)
 
-    (defun add_create_coins (RECIPIENT SELF_HASH my_amount to_pay payment_time base_conditions)
-        (c
-            (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
-            (c
+    (defun-inline stager (to_pay)
+        (list
+                (list ASSERT_SECONDS_ABSOLUTE payment_time)
+                (list ASSERT_MY_AMOUNT my_amount)
+                (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
                 (list
                     CREATE_COIN
                     (curry_hashes_inline SELF_HASH
@@ -27,21 +28,6 @@
                     (- my_amount to_pay)
                     (list RECIPIENT)
                 )
-                base_conditions
-            )
-        )
-    )
-
-    (if (> payment_time LAST_PAYMENT_TIME)
-        (add_create_coins
-            RECIPIENT
-            SELF_HASH
-            my_amount
-            (/ (* my_amount (- payment_time LAST_PAYMENT_TIME)) (- END_TIME LAST_PAYMENT_TIME))
-            payment_time
-            (list
-                (list ASSERT_SECONDS_ABSOLUTE payment_time)
-                (list ASSERT_MY_AMOUNT my_amount)
                 (list
                     RECEIVE_MESSAGE
                     23 ; sender puzzle hash, receiver coin id
@@ -49,8 +35,9 @@
                     RECIPIENT ; sender puzzle hash
                 )
             )
-        )
-        ; else
-        (x)
+    )
+
+    (stager
+        (/ (* my_amount (- payment_time LAST_PAYMENT_TIME)) (- END_TIME LAST_PAYMENT_TIME))
     )
 )
