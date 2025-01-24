@@ -131,3 +131,21 @@ impl StreamedCat {
         )))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clvm_utils::tree_hash;
+    use clvmr::serde::node_from_bytes;
+
+    use crate::{STREAM_PUZZLE, STREAM_PUZZLE_HASH};
+
+    use super::*;
+
+    #[test]
+    fn test_puzzle_hash() {
+        let mut allocator = Allocator::new();
+
+        let ptr = node_from_bytes(&mut allocator, &STREAM_PUZZLE).unwrap();
+        assert_eq!(tree_hash(&allocator, ptr), STREAM_PUZZLE_HASH);
+    }
+}
