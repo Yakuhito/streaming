@@ -36,15 +36,15 @@
         (add_create_coins
             RECIPIENT
             SELF_HASH
-            (/ (* my_amount (- payment_time LAST_PAYMENT_TIME)) (- END_TIME LAST_PAYMENT_TIME))
             my_amount
+            (/ (* my_amount (- payment_time LAST_PAYMENT_TIME)) (- END_TIME LAST_PAYMENT_TIME))
             payment_time
             (list
                 (list ASSERT_SECONDS_ABSOLUTE payment_time)
                 (list ASSERT_MY_AMOUNT my_amount)
                 (list
                     RECEIVE_MESSAGE
-                    ; 23 - sender puzzle hash, receiver coin id
+                    23 ; sender puzzle hash, receiver coin id
                     payment_time ; message
                     RECIPIENT ; sender puzzle hash
                 )

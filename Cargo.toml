@@ -15,3 +15,4 @@ chia-wallet-sdk = { git = "https://github.com/xch-dev/chia-wallet-sdk.git", rev 
 
 [dev-dependencies]
 anyhow = "1.0.95"
+hex = "0.4.3"

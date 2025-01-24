@@ -139,7 +139,7 @@ mod tests {
     use chia_wallet_sdk::{test_secret_key, Cat, Conditions, Simulator, StandardLayer};
     use clvm_traits::ToClvm;
     use clvm_utils::tree_hash;
-    use clvmr::serde::{node_from_bytes, node_to_bytes};
+    use clvmr::serde::node_from_bytes;
 
     use crate::{STREAM_PUZZLE, STREAM_PUZZLE_HASH};
 
@@ -182,7 +182,8 @@ mod tests {
         )?;
         minter_p2.spend(ctx, minter_coin, issue_cat)?;
 
-        let initial_vesting_cat = eve_cat.wrapped_child(user_puzzle_hash, payment_cat_amount);
+        let initial_vesting_cat =
+            eve_cat.wrapped_child(streaming_inner_puzzle_hash, payment_cat_amount);
         sim.spend_coins(ctx.take(), &[minter_sk.clone()])?;
         sim.set_next_timestamp(1000 + claim_intervals[0])?;
 
@@ -206,8 +207,12 @@ mod tests {
 
             // to claim the payment, user needs to send a message to the streaming CAT
             let user_coin = sim.new_coin(user_puzzle_hash, 0);
-            let message_to_send = claim_time.to_clvm(&mut ctx.allocator)?;
-            let message_to_send = Bytes::from(node_to_bytes(&ctx.allocator, message_to_send)?);
+            let message_to_send = format!("{:x}", claim_time);
+            let message_to_send = Bytes::from(hex::decode(if message_to_send.len() % 2 == 0 {
+                message_to_send
+            } else {
+                format!("0{:x}", claim_time)
+            })?);
             let coin_id_ptr = streamed_cat.coin.coin_id().to_clvm(&mut ctx.allocator)?;
             user_p2.spend(
                 ctx,
