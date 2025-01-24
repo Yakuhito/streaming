@@ -140,7 +140,7 @@ mod tests {
     use chia_wallet_sdk::{test_secret_key, Cat, Conditions, Simulator, StandardLayer};
     use clvm_traits::ToClvm;
     use clvm_utils::tree_hash;
-    use clvmr::{reduction::Reduction, serde::node_from_bytes};
+    use clvmr::serde::node_from_bytes;
 
     use crate::{STREAM_PUZZLE, STREAM_PUZZLE_HASH};
 
@@ -233,16 +233,8 @@ mod tests {
             let parent_puzzle = streamed_cat_spend
                 .puzzle_reveal
                 .to_clvm(&mut ctx.allocator)?;
-            let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
-            let Reduction(cost, _output) = clvmr::run_program(
-                &mut ctx.allocator,
-                &clvmr::ChiaDialect::new(0),
-                parent_puzzle,
-                parent_solution,
-                11_000_000_000,
-            )?;
-            println!("Cost: {}", cost);
             let parent_puzzle = Puzzle::from_clvm(&ctx.allocator, parent_puzzle)?;
+            let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
             streamed_cat = StreamedCat::from_parent_spend(
                 &mut ctx.allocator,
                 streamed_cat.coin,
