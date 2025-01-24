@@ -107,10 +107,11 @@ impl StreamedCat {
         let parent_solution =
             CatSolution::<StreamPuzzleSolution>::from_clvm(allocator, parent_solution)?;
 
-        let new_amount = parent_coin.amount
+        let paid_amount = parent_coin.amount
             * (parent_solution.inner_puzzle_solution.payment_time
                 - layers.inner_puzzle.last_payment_time)
             / (layers.inner_puzzle.end_time - layers.inner_puzzle.last_payment_time);
+        let new_amount = parent_coin.amount - paid_amount;
 
         let new_inner_layer = StreamLayer::new(
             layers.inner_puzzle.recipient,
@@ -199,7 +200,6 @@ mod tests {
 
         let mut claim_time = sim.next_timestamp();
         for (i, _interval) in claim_intervals.iter().enumerate() {
-            println!("claim_time: {}", claim_time);
             /* Payment is always based on last block's timestamp */
             if i < claim_intervals.len() - 1 {
                 sim.pass_time(claim_intervals[i + 1]);
