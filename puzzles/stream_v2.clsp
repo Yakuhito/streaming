@@ -1,0 +1,42 @@
+; stream.clsp by yakuhito
+
+;; Used to 'stream' CAT/XCH to a user over time.
+
+(mod (
+    RECIPIENT
+    END_TIME
+    ; 2nd curry
+    SELF_HASH
+    LAST_PAYMENT_TIME
+    my_amount
+    payment_time
+    to_pay
+)
+    (include condition_codes.clsp)
+    (include curry.clsp)
+
+    (list
+        (list ASSERT_SECONDS_ABSOLUTE payment_time)
+        (list ASSERT_MY_AMOUNT my_amount)
+        (list
+            CREATE_COIN RECIPIENT
+            (if (= to_pay (/ (* my_amount (- payment_time LAST_PAYMENT_TIME)) (- END_TIME LAST_PAYMENT_TIME))) to_pay (x))
+            (list RECIPIENT)
+        )
+        (list
+            CREATE_COIN
+            (curry_hashes_inline SELF_HASH
+                (sha256 1 SELF_HASH)
+                (sha256 1 payment_time)
+            )
+            (- my_amount to_pay)
+            (list RECIPIENT)
+        )
+        (list
+            RECEIVE_MESSAGE
+            23 ; sender puzzle hash, receiver coin id
+            payment_time ; message
+            RECIPIENT ; sender puzzle hash
+        )
+    )
+)

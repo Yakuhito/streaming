@@ -1,4 +1,6 @@
+use chia_protocol::Bytes32;
 use clap::{Parser, Subcommand};
+use thiserror::Error;
 
 #[derive(Debug, Parser)]
 #[command(name = "streaming")]
@@ -14,8 +16,8 @@ enum Commands {
     Launch {
         asset_id: String,
         amount: String,
-        start_time: u64,
-        end_time: u64,
+        start_timestamp: u64,
+        end_timestamp: u64,
         recipient: String,
     },
 
@@ -26,18 +28,26 @@ enum Commands {
     Claim { stream_id: String },
 }
 
-fn main() {
+#[derive(Error, Debug)]
+enum CliError {
+    #[error("Invalid asset id")]
+    InvalidAssetId,
+}
+
+fn main() -> Result<(), CliError> {
     let args = Cli::parse();
 
     match args.command {
         Commands::Launch {
             asset_id,
             amount,
-            start_time,
-            end_time,
+            start_timestamp,
+            end_timestamp,
             recipient,
         } => {
-            println!("Launching stream with asset_id={asset_id}, amount={amount}, start_time={start_time}, end_time={end_time}, recipient={recipient}");
+            let asset_id = hex::decode(asset_id).map_err(|_| CliError::InvalidAssetId)?;
+
+            // TODO: sage comms thingy
         }
         Commands::View { stream_id } => {
             println!("Viewing stream with stream_id={stream_id}");
@@ -46,4 +56,6 @@ fn main() {
             println!("Claiming stream with stream_id={stream_id}");
         }
     }
+
+    Ok(())
 }

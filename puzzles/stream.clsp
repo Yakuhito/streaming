@@ -16,25 +16,25 @@
 
     (defun-inline stager (to_pay)
         (list
-                (list ASSERT_SECONDS_ABSOLUTE payment_time)
-                (list ASSERT_MY_AMOUNT my_amount)
-                (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
-                (list
-                    CREATE_COIN
-                    (curry_hashes_inline SELF_HASH
-                        (sha256 1 SELF_HASH)
-                        (sha256 1 payment_time)
-                    )
-                    (- my_amount to_pay)
-                    (list RECIPIENT)
+            (list ASSERT_SECONDS_ABSOLUTE payment_time)
+            (list ASSERT_MY_AMOUNT my_amount)
+            (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
+            (list
+                CREATE_COIN
+                (curry_hashes_inline SELF_HASH
+                    (sha256 1 SELF_HASH)
+                    (sha256 1 payment_time)
                 )
-                (list
-                    RECEIVE_MESSAGE
-                    23 ; sender puzzle hash, receiver coin id
-                    payment_time ; message
-                    RECIPIENT ; sender puzzle hash
-                )
+                (- my_amount to_pay)
+                (list RECIPIENT)
             )
+            (list
+                RECEIVE_MESSAGE
+                23 ; sender puzzle hash, receiver coin id
+                payment_time ; message
+                RECIPIENT ; sender puzzle hash
+            )
+        )
     )
 
     (stager

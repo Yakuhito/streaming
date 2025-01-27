@@ -5,7 +5,7 @@ use chia::puzzles::{
 use chia_protocol::{Bytes32, Coin};
 use chia_wallet_sdk::{CatLayer, DriverError, Layer, Puzzle, Spend, SpendContext};
 use clvm_traits::FromClvm;
-use clvmr::{Allocator, NodePtr};
+use clvmr::{reduction::Reduction, Allocator, NodePtr};
 
 use crate::{StreamLayer, StreamPuzzleSolution};
 
@@ -66,6 +66,8 @@ impl StreamedCat {
                 inner_puzzle_solution: StreamPuzzleSolution {
                     my_amount: self.coin.amount,
                     payment_time,
+                    to_pay: self.coin.amount * (payment_time - self.last_payment_time)
+                        / (self.end_time - self.last_payment_time),
                 },
                 lineage_proof: Some(self.proof),
                 prev_coin_id: self.coin.coin_id(),
@@ -85,6 +87,14 @@ impl StreamedCat {
         let puzzle = self.construct_puzzle(ctx)?;
         let solution = self.construct_solution(ctx, payment_time)?;
 
+        let Reduction(cost, _output) = clvmr::run_program(
+            &mut ctx.allocator,
+            &clvmr::ChiaDialect::new(0),
+            puzzle,
+            solution,
+            11_000_000_000,
+        )?;
+        println!("cost: {cost}");
         ctx.spend(self.coin, Spend::new(puzzle, solution))
     }
 
