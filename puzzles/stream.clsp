@@ -9,35 +9,38 @@
     SELF_HASH
     LAST_PAYMENT_TIME
     my_amount
-    payment_time
+    to_pay
 )
     (include condition_codes.clsp)
     (include curry.clsp)
 
-    (defun-inline stager (to_pay)
+    (list
+        ; we have: to_pay = my_amount * (payment_time - LAST_PAYMENT_TIME) / (END_TIME - LAST_PAYMENT_TIME) 
+        ; moving terms around: payment_time = LAST_PAYMENT_TIME + (to_pay * (END_TIME - LAST_PAYMENT_TIME) / my_amount)
         (list
-            (list ASSERT_SECONDS_ABSOLUTE payment_time)
-            (list ASSERT_MY_AMOUNT my_amount)
-            (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
-            (list
-                CREATE_COIN
-                (curry_hashes_inline SELF_HASH
-                    (sha256 1 SELF_HASH)
-                    (sha256 1 payment_time)
-                )
-                (- my_amount to_pay)
-                (list RECIPIENT)
-            )
-            (list
-                RECEIVE_MESSAGE
-                23 ; sender puzzle hash, receiver coin id
-                payment_time ; message
-                RECIPIENT ; sender puzzle hash
-            )
+            ASSERT_SECONDS_ABSOLUTE
+            (+ LAST_PAYMENT_TIME (/ (* to_pay (- END_TIME LAST_PAYMENT_TIME)) my_amount))
         )
-    )
-
-    (stager
-        (/ (* my_amount (- payment_time LAST_PAYMENT_TIME)) (- END_TIME LAST_PAYMENT_TIME))
+        (list ASSERT_MY_AMOUNT my_amount)
+        (list
+            CREATE_COIN RECIPIENT
+            to_pay
+            (list RECIPIENT)
+        )
+        (list
+            CREATE_COIN
+            (curry_hashes_inline SELF_HASH
+                (sha256 1 SELF_HASH)
+                (sha256 1 payment_time)
+            )
+            (- my_amount to_pay)
+            (list RECIPIENT)
+        )
+        (list
+            RECEIVE_MESSAGE
+            23 ; sender puzzle hash, receiver coin id
+            to_pay ; message
+            RECIPIENT ; sender puzzle hash
+        )
     )
 )
