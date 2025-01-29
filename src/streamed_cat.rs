@@ -127,9 +127,6 @@ impl StreamedCat {
             + (paid_amount
                 * (layers.inner_puzzle.end_time - layers.inner_puzzle.last_payment_time)
                 / parent_coin.amount);
-        let paid_amount = parent_coin.amount
-            * (payment_time - layers.inner_puzzle.last_payment_time)
-            / (layers.inner_puzzle.end_time - layers.inner_puzzle.last_payment_time);
         let new_amount = parent_coin.amount - paid_amount;
 
         let new_inner_layer = StreamLayer::new(
@@ -154,7 +151,9 @@ impl StreamedCat {
 
 #[cfg(test)]
 mod tests {
-    use chia::puzzles::standard::StandardArgs;
+    use chia::{
+        consensus::gen::make_aggsig_final_message::u64_to_bytes, puzzles::standard::StandardArgs,
+    };
     use chia_protocol::Bytes;
     use chia_wallet_sdk::{test_secret_key, Cat, Conditions, Simulator, StandardLayer};
     use clvm_traits::ToClvm;
@@ -224,16 +223,18 @@ mod tests {
                 sim.pass_time(claim_intervals[i + 1]);
             }
 
+            println!(
+                "claim_time: {}, last_payment_time: {}, end_time: {}",
+                claim_time, streamed_cat.last_payment_time, streamed_cat.end_time
+            );
             let to_pay = streamed_cat.amount_to_be_paid(claim_time);
-            println!("to_pay: {}", to_pay);
+            println!(
+                "to_pay: {}, my_amount: {}",
+                to_pay, streamed_cat.coin.amount
+            );
             // to claim the payment, user needs to send a message to the streaming CAT
             let user_coin = sim.new_coin(user_puzzle_hash, 0);
-            let message_to_send = format!("{:x}", to_pay);
-            let message_to_send = Bytes::from(hex::decode(if message_to_send.len() % 2 == 0 {
-                message_to_send
-            } else {
-                format!("0{:x}", to_pay)
-            })?);
+            let message_to_send: Bytes = Bytes::new(u64_to_bytes(to_pay));
             let coin_id_ptr = streamed_cat.coin.coin_id().to_clvm(&mut ctx.allocator)?;
             user_p2.spend(
                 ctx,
@@ -245,6 +246,7 @@ mod tests {
 
             let spends = ctx.take();
             let streamed_cat_spend = spends.last().unwrap().clone();
+
             sim.spend_coins(spends, &[user_sk.clone()])?;
 
             // set up for next iteration
