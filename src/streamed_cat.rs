@@ -5,7 +5,7 @@ use chia::puzzles::{
 use chia_protocol::{Bytes32, Coin};
 use chia_wallet_sdk::{CatLayer, DriverError, Layer, Puzzle, Spend, SpendContext};
 use clvm_traits::FromClvm;
-use clvmr::{reduction::Reduction, Allocator, NodePtr};
+use clvmr::{Allocator, NodePtr};
 
 use crate::{StreamLayer, StreamPuzzleSolution};
 
@@ -65,14 +65,15 @@ impl StreamedCat {
     pub fn construct_solution(
         &self,
         ctx: &mut SpendContext,
-        to_pay: u64,
+        payment_time: u64,
     ) -> Result<NodePtr, DriverError> {
         self.layers().construct_solution(
             ctx,
             CatSolution {
                 inner_puzzle_solution: StreamPuzzleSolution {
                     my_amount: self.coin.amount,
-                    to_pay,
+                    payment_time,
+                    to_pay: self.amount_to_be_paid(payment_time),
                 },
                 lineage_proof: Some(self.proof),
                 prev_coin_id: self.coin.coin_id(),
@@ -88,18 +89,10 @@ impl StreamedCat {
         )
     }
 
-    pub fn spend(&self, ctx: &mut SpendContext, to_pay: u64) -> Result<(), DriverError> {
+    pub fn spend(&self, ctx: &mut SpendContext, payment_time: u64) -> Result<(), DriverError> {
         let puzzle = self.construct_puzzle(ctx)?;
-        let solution = self.construct_solution(ctx, to_pay)?;
+        let solution = self.construct_solution(ctx, payment_time)?;
 
-        let Reduction(cost, _output) = clvmr::run_program(
-            &mut ctx.allocator,
-            &clvmr::ChiaDialect::new(0),
-            puzzle,
-            solution,
-            11_000_000_000,
-        )?;
-        println!("cost: {cost}");
         ctx.spend(self.coin, Spend::new(puzzle, solution))
     }
 
@@ -122,17 +115,12 @@ impl StreamedCat {
         let parent_solution =
             CatSolution::<StreamPuzzleSolution>::from_clvm(allocator, parent_solution)?;
 
-        let paid_amount = parent_solution.inner_puzzle_solution.to_pay;
-        let payment_time = layers.inner_puzzle.last_payment_time
-            + (paid_amount
-                * (layers.inner_puzzle.end_time - layers.inner_puzzle.last_payment_time)
-                / parent_coin.amount);
-        let new_amount = parent_coin.amount - paid_amount;
+        let new_amount = parent_coin.amount - parent_solution.inner_puzzle_solution.to_pay;
 
         let new_inner_layer = StreamLayer::new(
             layers.inner_puzzle.recipient,
             layers.inner_puzzle.end_time,
-            payment_time,
+            parent_solution.inner_puzzle_solution.payment_time,
         );
         let new_puzzle_hash =
             CatArgs::curry_tree_hash(layers.asset_id, new_inner_layer.puzzle_hash());
@@ -144,7 +132,7 @@ impl StreamedCat {
             layers.inner_puzzle.recipient,
             layers.inner_puzzle.end_time,
             // last payment time should've been updated by the spend
-            payment_time,
+            parent_solution.inner_puzzle_solution.payment_time,
         )))
     }
 }
@@ -223,18 +211,9 @@ mod tests {
                 sim.pass_time(claim_intervals[i + 1]);
             }
 
-            println!(
-                "claim_time: {}, last_payment_time: {}, end_time: {}",
-                claim_time, streamed_cat.last_payment_time, streamed_cat.end_time
-            );
-            let to_pay = streamed_cat.amount_to_be_paid(claim_time);
-            println!(
-                "to_pay: {}, my_amount: {}",
-                to_pay, streamed_cat.coin.amount
-            );
             // to claim the payment, user needs to send a message to the streaming CAT
             let user_coin = sim.new_coin(user_puzzle_hash, 0);
-            let message_to_send: Bytes = Bytes::new(u64_to_bytes(to_pay));
+            let message_to_send: Bytes = Bytes::new(u64_to_bytes(claim_time));
             let coin_id_ptr = streamed_cat.coin.coin_id().to_clvm(&mut ctx.allocator)?;
             user_p2.spend(
                 ctx,
@@ -242,7 +221,7 @@ mod tests {
                 Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
             )?;
 
-            streamed_cat.spend(ctx, to_pay)?;
+            streamed_cat.spend(ctx, claim_time)?;
 
             let spends = ctx.take();
             let streamed_cat_spend = spends.last().unwrap().clone();
