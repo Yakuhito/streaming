@@ -7,9 +7,12 @@ use chia::{
     sha2::Sha256,
 };
 use chia_protocol::{Bytes, Bytes32, Coin};
-use chia_wallet_sdk::{CatLayer, DriverError, Layer, Puzzle, Spend, SpendContext};
+use chia_wallet_sdk::{
+    run_puzzle, CatLayer, Condition, Conditions, DriverError, Layer, Puzzle, Spend, SpendContext,
+};
 use clvm_traits::FromClvm;
-use clvmr::{Allocator, NodePtr};
+use clvm_utils::tree_hash;
+use clvmr::{op_utils::u64_from_bytes, Allocator, NodePtr};
 
 use crate::{StreamLayer, StreamPuzzleSolution};
 
@@ -107,7 +110,70 @@ impl StreamedCat {
         parent_solution: NodePtr,
     ) -> Result<Option<Self>, DriverError> {
         let Some(layers) = CatLayer::<StreamLayer>::parse_puzzle(allocator, parent_puzzle)? else {
-            return Ok(None);
+            // check if parent created streaming CAT
+            let parent_puzzle_ptr = parent_puzzle.ptr();
+            let output = run_puzzle(allocator, parent_puzzle_ptr, parent_solution)?;
+            let conds: Conditions<NodePtr> = Conditions::from_clvm(allocator, output)?;
+
+            let Some(parent_layer) = CatLayer::<NodePtr>::parse_puzzle(allocator, parent_puzzle)?
+            else {
+                return Ok(None);
+            };
+
+            let mut found_stream_layer: Option<Self> = None;
+            for cond in conds.into_iter() {
+                let Condition::CreateCoin(cc) = cond else {
+                    continue;
+                };
+
+                let Some(memos) = cc.memos else {
+                    continue;
+                };
+
+                let memos = Vec::<Bytes>::from_clvm(allocator, memos.value)?;
+                if memos.len() < 3 || memos.len() > 4 {
+                    continue;
+                }
+
+                let (recipient, end_time, last_payment_time): (Bytes32, u64, u64) =
+                    if memos.len() == 3 {
+                        let Ok(b64): Result<Bytes32, _> = memos[0].clone().try_into() else {
+                            continue;
+                        };
+                        (b64, u64_from_bytes(&memos[1]), u64_from_bytes(&memos[2]))
+                    } else {
+                        let Ok(b64): Result<Bytes32, _> = memos[1].clone().try_into() else {
+                            continue;
+                        };
+                        (b64, u64_from_bytes(&memos[2]), u64_from_bytes(&memos[3]))
+                    };
+
+                let candidate_inner_layer =
+                    StreamLayer::new(recipient, end_time, last_payment_time);
+                let candidate_inner_puzzle_hash = candidate_inner_layer.puzzle_hash();
+                let candidate_puzzle_hash =
+                    CatArgs::curry_tree_hash(parent_layer.asset_id, candidate_inner_puzzle_hash);
+
+                if cc.puzzle_hash != candidate_puzzle_hash.into() {
+                    continue;
+                }
+
+                found_stream_layer = Some(Self::new(
+                    parent_coin,
+                    parent_layer.asset_id,
+                    LineageProof {
+                        parent_parent_coin_info: parent_coin.parent_coin_info,
+                        parent_inner_puzzle_hash: tree_hash(allocator, parent_layer.inner_puzzle)
+                            .into(),
+                        parent_amount: parent_coin.amount,
+                    },
+                    recipient,
+                    end_time,
+                    last_payment_time,
+                ));
+            }
+
+            return Ok(found_stream_layer);
         };
 
         let proof = LineageProof {
@@ -148,7 +214,7 @@ impl StreamedCat {
     }
 
     pub fn get_launch_hints(recipient: Bytes32, start_time: u64, end_time: u64) -> Vec<Bytes> {
-        let hint: Bytes = StreamedCat::get_hint(recipient).into();
+        let hint: Bytes = recipient.into();
         let second_memo = u64_to_bytes(start_time);
         let third_memo = u64_to_bytes(end_time);
 

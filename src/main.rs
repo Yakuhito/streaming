@@ -99,13 +99,21 @@ fn parse_amount(amount: String, is_cat: bool) -> Result<u64, CliError> {
         return Err(CliError::InvalidAmount);
     };
 
-    let whole = whole.parse::<u64>().unwrap();
-    let fractional = fractional.parse::<u64>().unwrap();
+    let whole = whole.parse::<u64>().map_err(|_| CliError::InvalidAmount)?;
+    let fractional = if is_cat {
+        format!("{:0<3}", fractional)
+    } else {
+        format!("{:0<12}", fractional)
+    }
+    .parse::<u64>()
+    .map_err(|_| CliError::InvalidAmount)?;
 
     if is_cat {
-        Ok(whole * 1_000 + fractional)
+        // For CATs: 1 CAT = 1000 mojos
+        Ok(whole * 1000 + fractional)
     } else {
-        Ok(whole * 1_000_000_000_000_000_000 + fractional)
+        // For XCH: 1 XCH = 1_000_000_000_000 mojos
+        Ok(whole * 1_000_000_000_000 + fractional)
     }
 }
 
@@ -214,7 +222,7 @@ async fn main() -> Result<(), CliError> {
 
                 for output in coin.outputs {
                     if !output.receiving && output.address == streaming_cat_address {
-                        streaming_coin_id = Some(coin.coin_id.clone());
+                        streaming_coin_id = Some(output.coin_id.clone());
                         break;
                     }
                 }
