@@ -110,15 +110,24 @@ impl Layer for StreamLayer {
             return Ok(None);
         };
 
-        let program_2nd_curry =
-            CurriedProgram::<NodePtr, NodePtr>::from_clvm(allocator, puzzle_2nd_curry.curried_ptr)?;
+        let Ok(program_2nd_curry) =
+            CurriedProgram::<NodePtr, NodePtr>::from_clvm(allocator, puzzle_2nd_curry.curried_ptr)
+        else {
+            return Ok(None);
+        };
         let Some(puzzle_1st_curry) = CurriedPuzzle::parse(allocator, program_2nd_curry.program)
         else {
             return Ok(None);
         };
 
-        let args1 = StreamPuzzle1stCurryArgs::from_clvm(allocator, puzzle_1st_curry.args)?;
-        let args2 = StreamPuzzle2ndCurryArgs::from_clvm(allocator, puzzle_2nd_curry.args)?;
+        let Ok(args1) = StreamPuzzle1stCurryArgs::from_clvm(allocator, puzzle_1st_curry.args)
+        else {
+            return Ok(None);
+        };
+        let Ok(args2) = StreamPuzzle2ndCurryArgs::from_clvm(allocator, puzzle_2nd_curry.args)
+        else {
+            return Ok(None);
+        };
 
         if puzzle_1st_curry.mod_hash != STREAM_PUZZLE_HASH {
             return Err(DriverError::InvalidModHash);

@@ -135,7 +135,7 @@ impl StreamedCat {
                     continue;
                 }
 
-                let (recipient, end_time, last_payment_time): (Bytes32, u64, u64) =
+                let (recipient, last_payment_time, end_time): (Bytes32, u64, u64) =
                     if memos.len() == 3 {
                         let Ok(b64): Result<Bytes32, _> = memos[0].clone().try_into() else {
                             continue;
@@ -159,7 +159,11 @@ impl StreamedCat {
                 }
 
                 found_stream_layer = Some(Self::new(
-                    parent_coin,
+                    Coin::new(
+                        parent_coin.coin_id(),
+                        candidate_puzzle_hash.into(),
+                        cc.amount,
+                    ),
                     parent_layer.asset_id,
                     LineageProof {
                         parent_parent_coin_info: parent_coin.parent_coin_info,
