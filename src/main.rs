@@ -16,7 +16,9 @@ use thiserror::Error;
 
 mod client;
 
-use client::{Amount, GetDerivations, SageClient, SendCat, SendXch};
+use client::{
+    Amount, CoinJson, CoinSpendJson, GetDerivations, SageClient, SendCat, SendXch, SignCoinSpends,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "streaming")]
@@ -324,7 +326,7 @@ async fn main() -> Result<(), CliError> {
 
                 if coin_record.spent_block_index == 0 {
                     println!(
-                        "  Coin 0x{} currently unspent.",
+                        "  Coin {} currently unspent.",
                         hex::encode(stream_coin_id.to_vec())
                     );
                     break;
@@ -496,21 +498,21 @@ async fn main() -> Result<(), CliError> {
                 return Err(CliError::InvalidStreamId());
             };
 
-            let launcher_puzzle = coin_solution
+            let puzzle = coin_solution
                 .puzzle_reveal
                 .to_clvm(&mut ctx.allocator)
                 .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-            let launcher_solution = coin_solution
+            let solution = coin_solution
                 .solution
                 .to_clvm(&mut ctx.allocator)
                 .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-            let launcher_puzzle = Puzzle::parse(&ctx.allocator, launcher_puzzle);
+            let puzzle = Puzzle::parse(&ctx.allocator, puzzle);
 
             let Some(mut latest_streamed_coin) = StreamedCat::from_parent_spend(
                 &mut ctx.allocator,
                 coin_record.coin,
-                launcher_puzzle,
-                launcher_solution,
+                puzzle,
+                solution,
             )?
             else {
                 println!("Failed to parse streamed CAT");
@@ -530,13 +532,15 @@ async fn main() -> Result<(), CliError> {
 
             if let Some(unspent_coin_records) = unspent.coin_records {
                 for coin_record in unspent_coin_records {
+                    println!("A");
                     let puzzle_and_solution = cli
                         .get_puzzle_and_solution(
-                            coin_record.coin.coin_id(),
-                            Some(coin_record.spent_block_index),
+                            coin_record.coin.parent_coin_info,
+                            Some(coin_record.confirmed_block_index),
                         )
                         .await
                         .map_err(CliError::Reqwest)?;
+                    println!("B");
 
                     let Some(coin_solution) = puzzle_and_solution.coin_solution else {
                         continue;
@@ -756,6 +760,33 @@ async fn main() -> Result<(), CliError> {
                 Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
             )?;
             latest_streamed_coin.spend(&mut ctx, claim_time)?;
+
+            println!("Spend bundle ready. Last confirmation - press 'Enter' to proceed");
+            let _ = std::io::stdin().read_line(&mut String::new());
+
+            let sign_request = SignCoinSpends {
+                coin_spends: ctx
+                    .take()
+                    .iter()
+                    .map(|c| CoinSpendJson {
+                        coin: CoinJson {
+                            parent_coin_info: "0x".to_string()
+                                + &hex::encode(c.coin.parent_coin_info.to_vec()),
+                            puzzle_hash: "0x".to_string()
+                                + &hex::encode(c.coin.puzzle_hash.to_vec()),
+                            amount: c.coin.amount,
+                        },
+                        puzzle_reveal: "0x".to_string() + &hex::encode(c.puzzle_reveal.to_vec()),
+                        solution: "0x".to_string() + &hex::encode(c.solution.to_vec()),
+                    })
+                    .collect(),
+                auto_submit: true,
+                partial: false,
+            };
+
+            let response = sage_client.sign_coin_spends(sign_request).await?;
+
+            println!("Response: {}", response);
         }
     }
 

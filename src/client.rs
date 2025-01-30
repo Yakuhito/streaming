@@ -149,6 +149,22 @@ impl SageClient {
         let response_body = response.json::<SendCatResponse>().await?;
         Ok(response_body)
     }
+
+    pub async fn sign_coin_spends(&self, request: SignCoinSpends) -> Result<String, ClientError> {
+        let url = format!("{}/sign_coin_spends", self.base_url);
+        let response = self.client.post(&url).json(&request).send().await?;
+
+        if !response.status().is_success() {
+            return Err(ClientError::InvalidResponse(format!(
+                "Status: {}, Body: {:?}",
+                response.status(),
+                response.text().await?
+            )));
+        }
+
+        let response_body = response.json::<String>().await?;
+        Ok(response_body)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -180,4 +196,27 @@ pub struct SendXch {
     pub memos: Vec<String>,
     #[serde(default)]
     pub auto_submit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoinJson {
+    pub parent_coin_info: String,
+    pub puzzle_hash: String,
+    pub amount: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoinSpendJson {
+    pub coin: CoinJson,
+    pub puzzle_reveal: String,
+    pub solution: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignCoinSpends {
+    pub coin_spends: Vec<CoinSpendJson>,
+    #[serde(default)]
+    pub auto_submit: bool,
+    #[serde(default)]
+    pub partial: bool,
 }
