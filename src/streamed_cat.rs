@@ -1,6 +1,9 @@
-use chia::puzzles::{
-    cat::{CatArgs, CatSolution},
-    CoinProof, LineageProof,
+use chia::{
+    puzzles::{
+        cat::{CatArgs, CatSolution},
+        CoinProof, LineageProof,
+    },
+    sha2::Sha256,
 };
 use chia_protocol::{Bytes32, Coin};
 use chia_wallet_sdk::{CatLayer, DriverError, Layer, Puzzle, Spend, SpendContext};
@@ -134,6 +137,20 @@ impl StreamedCat {
             // last payment time should've been updated by the spend
             parent_solution.inner_puzzle_solution.payment_time,
         )))
+    }
+
+    pub fn get_hint(recipient: Bytes32) -> Bytes32 {
+        let mut s = Sha256::new();
+        s.update(b"s");
+        s.update(recipient.as_slice());
+        s.finalize().into()
+    }
+
+    pub fn get_launch_hints(recipient: Bytes32. start_time: u64) -> Bytes32 {
+        let mut s = Sha256::new();
+        s.update(b"s");
+        s.update(recipient.as_slice());
+        s.finalize().into()
     }
 }
 

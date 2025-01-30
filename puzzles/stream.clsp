@@ -27,7 +27,7 @@
                     (sha256 1 payment_time)
                 )
                 (- my_amount to_pay)
-                (list RECIPIENT)
+                (list (sha256 's' RECIPIENT))
             )
             (list
                 RECEIVE_MESSAGE
