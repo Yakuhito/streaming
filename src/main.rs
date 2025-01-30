@@ -1,8 +1,10 @@
-use chia::{bls::PublicKey, traits::Streamable};
-use chia_protocol::{Bytes32, Coin, CoinSpend, Program};
+use chia::{
+    bls::PublicKey, consensus::gen::make_aggsig_final_message::u64_to_bytes, traits::Streamable,
+};
+use chia_protocol::{Bytes, Bytes32, Coin, CoinSpend, Program};
 use chia_wallet_sdk::{
-    decode_address, encode_address, ChiaRpcClient, CoinsetClient, DriverError, Layer, Puzzle,
-    SpendContext, StandardLayer,
+    decode_address, encode_address, ChiaRpcClient, CoinsetClient, Conditions, DriverError, Layer,
+    Puzzle, SpendContext, StandardLayer,
 };
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
@@ -679,7 +681,7 @@ async fn main() -> Result<(), CliError> {
 
             let initial_send = sage_client
                 .send_xch(SendXch {
-                    address: recipient_address,
+                    address: recipient_address.clone(),
                     amount: Amount(0),
                     fee: Amount(parse_amount(fee, false)?),
                     memos: vec![],
@@ -715,6 +717,44 @@ async fn main() -> Result<(), CliError> {
                 });
             }
 
+            let mut lead_coin_parent: Option<Bytes32> = None;
+            for input in initial_send.summary.inputs {
+                if input.coin_type != Some("xch".to_string()) {
+                    continue;
+                }
+
+                if !input
+                    .outputs
+                    .iter()
+                    .any(|c| c.amount == 0 && c.address == recipient_address)
+                {
+                    continue;
+                };
+
+                let lead_coin_parent_b32: [u8; 32] = hex::decode(input.coin_id.replace("0x", ""))?
+                    .try_into()
+                    .unwrap();
+                lead_coin_parent = Some(Bytes32::from(lead_coin_parent_b32));
+            }
+
+            let Some(lead_coin_parent) = lead_coin_parent else {
+                println!("Failed to find lead coin parent");
+                return Ok(());
+            };
+
+            let lead_coin = Coin::new(lead_coin_parent, recipient, 0);
+
+            let message_to_send = Bytes::new(u64_to_bytes(claim_time));
+            let coin_id_ptr = latest_streamed_coin
+                .coin
+                .coin_id()
+                .to_clvm(&mut ctx.allocator)
+                .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+            p2.spend(
+                &mut ctx,
+                lead_coin,
+                Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
+            )?;
             latest_streamed_coin.spend(&mut ctx, claim_time)?;
         }
     }
