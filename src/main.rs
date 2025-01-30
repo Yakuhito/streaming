@@ -1,7 +1,7 @@
 use chia::puzzles::cat::CatArgs;
 use chia_protocol::Bytes32;
-use chia_wallet_sdk::{decode_address, encode_address, CoinsetClient};
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
+use chia_wallet_sdk::{decode_address, encode_address, ChiaRpcClient, CoinsetClient};
+use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use dirs::home_dir;
 use std::path::{Path, PathBuf};
@@ -76,6 +76,8 @@ enum CliError {
     EncodeAddressError(#[from] bech32::Error),
     #[error("Failed to get streaming coin id - streaming CAT might exist, but the CLI was unable to find it.")]
     UnknownStreamingCoinId,
+    #[error("Coinset.org request failed")]
+    ReqwestError(#[from] reqwest::Error),
 }
 
 fn expand_tilde<P: AsRef<Path>>(path_str: P) -> Result<PathBuf, CliError> {
@@ -244,7 +246,20 @@ async fn main() -> Result<(), CliError> {
                 CoinsetClient::testnet11()
             };
 
-            // todo: wait and
+            loop {
+                let resp = cli
+                    .get_coin_record_by_name(streaming_coin_id.into())
+                    .await
+                    .map_err(CliError::ReqwestError)?;
+
+                if resp.success && resp.coin_record.is_some() {
+                    break;
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            }
+
+            println!("Confimed! :)");
         }
         Commands::View {
             stream_id,
