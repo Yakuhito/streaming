@@ -114,4 +114,70 @@ impl SageClient {
         let response_body = response.json::<SendCatResponse>().await?;
         Ok(response_body)
     }
+
+    pub async fn get_derivations(
+        &self,
+        request: GetDerivations,
+    ) -> Result<GetDerivationsResponse, ClientError> {
+        let url = format!("{}/get_derivations", self.base_url);
+        let response = self.client.post(&url).json(&request).send().await?;
+
+        if !response.status().is_success() {
+            return Err(ClientError::InvalidResponse(format!(
+                "Status: {}, Body: {:?}",
+                response.status(),
+                response.text().await?
+            )));
+        }
+
+        let response_body = response.json::<GetDerivationsResponse>().await?;
+        Ok(response_body)
+    }
+
+    pub async fn send_xch(&self, request: SendXch) -> Result<SendCatResponse, ClientError> {
+        let url = format!("{}/send_xch", self.base_url);
+        let response = self.client.post(&url).json(&request).send().await?;
+
+        if !response.status().is_success() {
+            return Err(ClientError::InvalidResponse(format!(
+                "Status: {}, Body: {:?}",
+                response.status(),
+                response.text().await?
+            )));
+        }
+
+        let response_body = response.json::<SendCatResponse>().await?;
+        Ok(response_body)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct GetDerivations {
+    #[serde(default)]
+    pub hardened: bool,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Derivation {
+    pub index: u32,
+    pub public_key: String,
+    pub address: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetDerivationsResponse {
+    pub derivations: Vec<Derivation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SendXch {
+    pub address: String,
+    pub amount: Amount,
+    pub fee: Amount,
+    #[serde(default)]
+    pub memos: Vec<String>,
+    #[serde(default)]
+    pub auto_submit: bool,
 }

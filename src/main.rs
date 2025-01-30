@@ -1,3 +1,4 @@
+use chia::bls::PublicKey;
 use chia_protocol::Bytes32;
 use chia_wallet_sdk::{
     decode_address, encode_address, ChiaRpcClient, CoinsetClient, DriverError, Puzzle, SpendContext,
@@ -12,7 +13,7 @@ use thiserror::Error;
 
 mod client;
 
-use client::{Amount, SageClient, SendCat};
+use client::{Amount, GetDerivations, SageClient, SendCat, SendXch};
 
 #[derive(Debug, Parser)]
 #[command(name = "streaming")]
@@ -55,6 +56,10 @@ enum Commands {
         fee: String,
         #[arg(long, default_value_t = false)]
         mainnet: bool,
+        #[arg(long, default_value_t = false)]
+        hardened: bool,
+        #[arg(long, default_value = "10000")]
+        max_derivations: u64,
     },
 }
 
@@ -417,6 +422,8 @@ async fn main() -> Result<(), CliError> {
             cert_path,
             fee,
             mainnet,
+            hardened,
+            max_derivations,
         } => {
             let cert_path = expand_tilde(cert_path)?;
 
@@ -608,6 +615,79 @@ async fn main() -> Result<(), CliError> {
             println!("Claim amount: {:.3} CATs", claim_amount as f64 / 1000.0);
             println!("Press 'Enter' to proceed");
             let _ = std::io::stdin().read_line(&mut String::new());
+
+            let recipient = latest_streamed_coin.recipient;
+            let recipient_address =
+                encode_address(recipient.into(), if mainnet { "xch" } else { "txch" }).map_err(
+                    |e| {
+                        eprintln!("Failed to encode address: {}", e);
+                        CliError::InvalidStreamId()
+                    },
+                )?;
+            println!(
+                "Searching for key associated with address: {}",
+                recipient_address
+            );
+
+            let cert_file = cert_path.join("wallet.crt");
+            let key_file = cert_path.join("wallet.key");
+
+            let sage_client =
+                SageClient::new(&cert_file, &key_file, "https://localhost:9257".to_string())
+                    .map_err(|e| {
+                        eprintln!("Failed to create Sage client: {}", e);
+                        CliError::HomeDirectoryNotFound
+                    })?;
+
+            let mut public_key: Option<PublicKey> = None;
+            for i in (0..max_derivations).step_by(1000) {
+                let derivation_resp = sage_client
+                    .get_derivations(GetDerivations {
+                        offset: i as u32,
+                        limit: 1000,
+                        hardened,
+                    })
+                    .await?;
+
+                for derivation in derivation_resp.derivations {
+                    if derivation.address == recipient_address {
+                        let pubkey_bytes = hex::decode(derivation.public_key).unwrap();
+                        let pubkey_bytes: [u8; 48] = pubkey_bytes.try_into().unwrap();
+                        public_key = Some(PublicKey::from_bytes(&pubkey_bytes).unwrap());
+                        break;
+                    }
+                }
+            }
+
+            let Some(public_key) = public_key else {
+                println!("Failed to find public key");
+                return Err(CliError::InvalidStreamId());
+            };
+
+            println!("Public key: {:?}", public_key);
+            println!("Building spend bundle...");
+
+            let send_xch_request = SendXch {
+                address: "txch1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqm6ksh7qddh"
+                    .to_string(),
+                amount: Amount(1337),
+                fee: Amount(1),
+                memos: vec![],
+                auto_submit: false,
+            };
+
+            let response = sage_client.send_xch(send_xch_request).await?;
+
+            for input in response.summary.inputs {
+                println!("Input: {} XCH", input.amount as f64 / 1_000_000_000_000.0);
+                for output in input.outputs {
+                    println!(
+                        "  Output: {} XCH to {}",
+                        output.amount as f64 / 1_000_000_000_000.0,
+                        output.address
+                    );
+                }
+            }
         }
     }
 
