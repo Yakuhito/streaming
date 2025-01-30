@@ -1,7 +1,8 @@
-use chia::bls::PublicKey;
-use chia_protocol::Bytes32;
+use chia::{bls::PublicKey, traits::Streamable};
+use chia_protocol::{Bytes32, Coin, CoinSpend, Program};
 use chia_wallet_sdk::{
-    decode_address, encode_address, ChiaRpcClient, CoinsetClient, DriverError, Puzzle, SpendContext,
+    decode_address, encode_address, ChiaRpcClient, CoinsetClient, DriverError, Layer, Puzzle,
+    SpendContext, StandardLayer,
 };
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
@@ -85,6 +86,8 @@ enum CliError {
     Reqwest(#[from] reqwest::Error),
     #[error("Driver error")]
     Driver(#[from] chia_wallet_sdk::DriverError),
+    #[error("Hex decoding failed")]
+    HexDecodingFailed(#[from] hex::FromHexError),
 }
 
 fn expand_tilde<P: AsRef<Path>>(path_str: P) -> Result<PathBuf, CliError> {
@@ -667,27 +670,52 @@ async fn main() -> Result<(), CliError> {
             println!("Public key: {:?}", public_key);
             println!("Building spend bundle...");
 
-            let send_xch_request = SendXch {
-                address: "txch1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqm6ksh7qddh"
-                    .to_string(),
-                amount: Amount(1337),
-                fee: Amount(1),
-                memos: vec![],
-                auto_submit: false,
-            };
-
-            let response = sage_client.send_xch(send_xch_request).await?;
-
-            for input in response.summary.inputs {
-                println!("Input: {} XCH", input.amount as f64 / 1_000_000_000_000.0);
-                for output in input.outputs {
-                    println!(
-                        "  Output: {} XCH to {}",
-                        output.amount as f64 / 1_000_000_000_000.0,
-                        output.address
-                    );
-                }
+            let p2 = StandardLayer::new(public_key);
+            let p2_puzzle_ptr = p2.construct_puzzle(&mut ctx)?;
+            if ctx.tree_hash(p2_puzzle_ptr) != recipient.into() {
+                eprintln!("Recipient is using non-standard puzzle :(");
+                return Ok(());
             }
+
+            let initial_send = sage_client
+                .send_xch(SendXch {
+                    address: recipient_address,
+                    amount: Amount(0),
+                    fee: Amount(parse_amount(fee, false)?),
+                    memos: vec![],
+                    auto_submit: false,
+                })
+                .await?;
+
+            for spend in initial_send.coin_spends {
+                let parent_coin_info: [u8; 32] =
+                    hex::decode(spend.coin.parent_coin_info.replace("0x", ""))
+                        .map_err(CliError::HexDecodingFailed)?
+                        .try_into()
+                        .unwrap();
+                let puzzle_hash: [u8; 32] = hex::decode(spend.coin.puzzle_hash.replace("0x", ""))
+                    .map_err(CliError::HexDecodingFailed)?
+                    .try_into()
+                    .unwrap();
+                let coin = Coin::new(
+                    Bytes32::from(parent_coin_info),
+                    Bytes32::from(puzzle_hash),
+                    spend.coin.amount,
+                );
+
+                let puzzle_reveal: Vec<u8> = hex::decode(spend.puzzle_reveal.replace("0x", "0"))
+                    .map_err(CliError::HexDecodingFailed)?;
+                let solution: Vec<u8> = hex::decode(spend.solution.replace("0x", "0"))
+                    .map_err(CliError::HexDecodingFailed)?;
+
+                ctx.insert(CoinSpend {
+                    coin,
+                    puzzle_reveal: Program::from_bytes(&puzzle_reveal).unwrap(),
+                    solution: Program::from_bytes(&solution).unwrap(),
+                });
+            }
+
+            latest_streamed_coin.spend(&mut ctx, claim_time)?;
         }
     }
 

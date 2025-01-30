@@ -48,7 +48,7 @@ pub struct Summary {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CoinSpend {
+pub struct DeserializableCoinSpend {
     pub coin: DeserializableCoin,
     pub puzzle_reveal: String,
     pub solution: String,
@@ -64,7 +64,7 @@ pub struct DeserializableCoin {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SendCatResponse {
     pub summary: Summary,
-    pub coin_spends: Vec<CoinSpend>,
+    pub coin_spends: Vec<DeserializableCoinSpend>,
 }
 
 #[derive(Error, Debug)]
