@@ -1,6 +1,6 @@
 ; stream.clsp by yakuhito
 
-;; Used to 'stream' CAT/XCH to a user over time.
+;; Used to 'stream' CATs/XCH to a user over time.
 
 (mod (
     RECIPIENT

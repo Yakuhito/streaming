@@ -419,8 +419,195 @@ async fn main() -> Result<(), CliError> {
             mainnet,
         } => {
             let cert_path = expand_tilde(cert_path)?;
-            println!("Using cert path: {}", cert_path.display());
-            println!("Claiming stream with stream_id={stream_id}");
+
+            let (stream_coin_id, prefix) =
+                decode_address(&stream_id).map_err(|_| CliError::InvalidStreamId())?;
+            if prefix != "s" {
+                return Err(CliError::InvalidStreamId());
+            }
+            let stream_coin_id = Bytes32::from(stream_coin_id);
+
+            let cli = if mainnet {
+                CoinsetClient::mainnet()
+            } else {
+                CoinsetClient::testnet11()
+            };
+
+            println!("Fetching latest unspent coin...");
+            let eve_coin_record_resp = cli
+                .get_coin_record_by_name(stream_coin_id)
+                .await
+                .map_err(CliError::Reqwest)?;
+
+            if !eve_coin_record_resp.success {
+                println!("Failed to get eve streaming coin record :(");
+                return Err(CliError::InvalidStreamId());
+            }
+
+            let Some(eve_coin_record) = eve_coin_record_resp.coin_record else {
+                println!("Eve coin record ot available");
+                return Err(CliError::InvalidStreamId());
+            };
+
+            let mut ctx = SpendContext::new();
+            let coin_record = if eve_coin_record.spent {
+                eve_coin_record
+            } else {
+                let launcher_coin_record_resp = cli
+                    .get_coin_record_by_name(eve_coin_record.coin.parent_coin_info)
+                    .await
+                    .map_err(CliError::Reqwest)?;
+
+                if !launcher_coin_record_resp.success {
+                    println!("Failed to get launcher coin record :(");
+                    return Err(CliError::InvalidStreamId());
+                }
+
+                let Some(launcher_coin_record) = launcher_coin_record_resp.coin_record else {
+                    println!("Launcher coin record ot available");
+                    return Err(CliError::InvalidStreamId());
+                };
+
+                launcher_coin_record
+            };
+
+            let puzzle_and_solution = cli
+                .get_puzzle_and_solution(
+                    coin_record.coin.coin_id(),
+                    Some(coin_record.spent_block_index),
+                )
+                .await
+                .map_err(CliError::Reqwest)?;
+
+            let Some(coin_solution) = puzzle_and_solution.coin_solution else {
+                println!("Failed to get launcher solution");
+                return Err(CliError::InvalidStreamId());
+            };
+
+            let launcher_puzzle = coin_solution
+                .puzzle_reveal
+                .to_clvm(&mut ctx.allocator)
+                .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+            let launcher_solution = coin_solution
+                .solution
+                .to_clvm(&mut ctx.allocator)
+                .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+            let launcher_puzzle = Puzzle::parse(&ctx.allocator, launcher_puzzle);
+
+            let Some(mut latest_streamed_coin) = StreamedCat::from_parent_spend(
+                &mut ctx.allocator,
+                coin_record.coin,
+                launcher_puzzle,
+                launcher_solution,
+            )?
+            else {
+                println!("Failed to parse streamed CAT");
+                return Err(CliError::InvalidStreamId());
+            };
+
+            let hint = StreamedCat::get_hint(latest_streamed_coin.recipient);
+            let unspent = cli
+                .get_coin_records_by_hint(
+                    hint,
+                    Some(coin_record.spent_block_index - 1),
+                    None,
+                    Some(false),
+                )
+                .await
+                .map_err(CliError::Reqwest)?;
+
+            if let Some(unspent_coin_records) = unspent.coin_records {
+                for coin_record in unspent_coin_records {
+                    let puzzle_and_solution = cli
+                        .get_puzzle_and_solution(
+                            coin_record.coin.coin_id(),
+                            Some(coin_record.spent_block_index),
+                        )
+                        .await
+                        .map_err(CliError::Reqwest)?;
+
+                    let Some(coin_solution) = puzzle_and_solution.coin_solution else {
+                        continue;
+                    };
+
+                    let puzzle = coin_solution
+                        .puzzle_reveal
+                        .to_clvm(&mut ctx.allocator)
+                        .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+                    let solution = coin_solution
+                        .solution
+                        .to_clvm(&mut ctx.allocator)
+                        .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+                    let puzzle = Puzzle::parse(&ctx.allocator, puzzle);
+                    let Some(streamed_coin) = StreamedCat::from_parent_spend(
+                        &mut ctx.allocator,
+                        coin_record.coin,
+                        puzzle,
+                        solution,
+                    )?
+                    else {
+                        continue;
+                    };
+
+                    if streamed_coin.asset_id == latest_streamed_coin.asset_id
+                        && streamed_coin.end_time == latest_streamed_coin.end_time
+                        && streamed_coin.recipient == latest_streamed_coin.recipient
+                        && streamed_coin.last_payment_time > latest_streamed_coin.last_payment_time
+                    {
+                        latest_streamed_coin = streamed_coin;
+                    }
+                }
+            }
+
+            println!(
+                "Latest streamed coin id: 0x{}",
+                hex::encode(latest_streamed_coin.coin.coin_id().to_vec())
+            );
+            println!(
+                "Last payment time: {} (local: {}); remaining amount: {:.3} CATs",
+                latest_streamed_coin.last_payment_time,
+                Local
+                    .timestamp_opt(latest_streamed_coin.last_payment_time as i64, 0)
+                    .unwrap()
+                    .format("%Y-%m-%d %H:%M:%S"),
+                latest_streamed_coin.coin.amount as f64 / 1000.0
+            );
+
+            let state_resp = cli
+                .get_blockchain_state()
+                .await
+                .map_err(CliError::Reqwest)?;
+            let Some(state) = state_resp.blockchain_state else {
+                println!("Failed to get blockchain state");
+                return Err(CliError::InvalidStreamId());
+            };
+
+            let mut block_record = state.peak;
+            while block_record.timestamp.is_none() {
+                let block_resp = cli
+                    .get_block_record_by_height(block_record.height - 1)
+                    .await
+                    .map_err(CliError::Reqwest)?;
+                let Some(new_block_record) = block_resp.block_record else {
+                    println!("Failed to get block record");
+                    return Err(CliError::InvalidStreamId());
+                };
+
+                block_record = new_block_record;
+            }
+
+            println!(
+                "Latest block timestamp: {}",
+                block_record.timestamp.unwrap()
+            );
+            let claim_time = block_record.timestamp.unwrap() - 1;
+            let claim_amount = latest_streamed_coin.coin.amount
+                * (claim_time - latest_streamed_coin.last_payment_time)
+                / (latest_streamed_coin.end_time - latest_streamed_coin.last_payment_time);
+
+            println!("Claim amount: {:.3} CATs", claim_amount as f64 / 1000.0);
+            println!("Press 'Enter' to proceed");
+            let _ = std::io::stdin().read_line(&mut String::new());
         }
     }
 
