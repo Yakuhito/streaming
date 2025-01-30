@@ -1,11 +1,11 @@
 use chia::puzzles::cat::CatArgs;
-use chia_protocol::{Bytes32, Coin};
-use chia_wallet_sdk::{decode_address, encode_address, ClientError};
+use chia_protocol::Bytes32;
+use chia_wallet_sdk::{decode_address, encode_address, CoinsetClient};
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Utc};
 use clap::{Parser, Subcommand};
-use clvm_utils::CurriedProgram;
 use dirs::home_dir;
 use std::path::{Path, PathBuf};
-use streaming::{streamed_cat, StreamPuzzle2ndCurryArgs, StreamedCat};
+use streaming::{StreamPuzzle2ndCurryArgs, StreamedCat};
 use thiserror::Error;
 
 mod client;
@@ -74,6 +74,8 @@ enum CliError {
     AddressError(#[from] chia_wallet_sdk::AddressError),
     #[error("Failed to encode address")]
     EncodeAddressError(#[from] bech32::Error),
+    #[error("Failed to get streaming coin id - streaming CAT might exist, but the CLI was unable to find it.")]
+    UnknownStreamingCoinId,
 }
 
 fn expand_tilde<P: AsRef<Path>>(path_str: P) -> Result<PathBuf, CliError> {
@@ -133,7 +135,7 @@ async fn main() -> Result<(), CliError> {
                         CliError::HomeDirectoryNotFound
                     })?;
 
-            let (recipient_puzzle_hash, prefix) =
+            let (recipient_puzzle_hash, _prefix) =
                 decode_address(&recipient).map_err(CliError::AddressError)?;
             let cat_amount = parse_amount(amount, true)?;
 
@@ -147,21 +149,102 @@ async fn main() -> Result<(), CliError> {
                 ),
             );
 
+            println!("You're about to start streaming a CAT to {}", recipient);
+            println!("Note: Sage RPC should be running on port 9257\n");
+            println!("Please note that the CAT CANNOT be clawed back. Please ensure the details below are correct.");
+            println!("Asset ID: {}", hex::encode(asset_id));
+            println!("Amount: {:.3}", cat_amount as f64 / 1000.0);
+            println!(
+                "Start Time: {}",
+                Local
+                    .timestamp_opt(start_timestamp as i64, 0)
+                    .unwrap()
+                    .format("%Y-%m-%d %H:%M:%S")
+            );
+            println!(
+                "End Time: {}",
+                Local
+                    .timestamp_opt(end_timestamp as i64, 0)
+                    .unwrap()
+                    .format("%Y-%m-%d %H:%M:%S")
+            );
+            println!(
+                "Fee: {:.12}",
+                parse_amount(fee.clone(), false)? as f64 / 1_000_000_000_000.0
+            );
+            println!("Mainnet?: {}", mainnet);
+
+            println!("Press Enter to continue...");
+            let _ = std::io::stdin().read_line(&mut String::new());
+
+            let streaming_cat_address = encode_address(
+                target_puzzle_hash.into(),
+                if mainnet { "xch" } else { "txch" },
+            )
+            .map_err(CliError::EncodeAddressError)?;
+
+            println!("Sending CAT...");
             let send_cat_request = SendCat {
                 asset_id: hex::encode(asset_id),
-                address: encode_address(
-                    target_puzzle_hash.into(),
-                    if mainnet { "xch" } else { "txch" },
-                )
-                .map_err(CliError::EncodeAddressError)?,
+                address: streaming_cat_address.clone(),
                 amount: Amount(cat_amount),
                 fee: Amount(parse_amount(fee, false)?),
-                memos: todo!(""),
+                memos: StreamedCat::get_launch_hints(
+                    Bytes32::new(recipient_puzzle_hash),
+                    start_timestamp,
+                    end_timestamp,
+                )
+                .iter()
+                .map(|b| hex::encode(b.to_vec()))
+                .collect(),
                 auto_submit: true,
             };
 
             let response = client.send_cat(send_cat_request).await?;
-            println!("Response: {:?}", response);
+
+            let mut streaming_coin_id: Option<String> = None;
+            for coin in response.summary.inputs {
+                if coin.coin_type != Some("cat".to_string())
+                    || coin.asset_id != Some(hex::encode(asset_id))
+                {
+                    continue;
+                }
+
+                for output in coin.outputs {
+                    if !output.receiving && output.address == streaming_cat_address {
+                        streaming_coin_id = Some(coin.coin_id.clone());
+                        break;
+                    }
+                }
+
+                if streaming_coin_id.is_some() {
+                    break;
+                }
+            }
+
+            let Some(streaming_coin_id) = streaming_coin_id else {
+                return Err(CliError::UnknownStreamingCoinId);
+            };
+
+            println!("Streaming coin id: 0x{}", streaming_coin_id);
+
+            let streaming_coin_id = hex::decode(streaming_coin_id)
+                .map_err(|_| CliError::UnknownStreamingCoinId)?
+                .try_into()
+                .map_err(|_| CliError::UnknownStreamingCoinId)?;
+            println!(
+                "Stream id: {}",
+                encode_address(streaming_coin_id, "s").unwrap()
+            );
+
+            println!("Waiting for mempool item to be confirmed...");
+            let cli = if mainnet {
+                CoinsetClient::mainnet()
+            } else {
+                CoinsetClient::testnet11()
+            };
+
+            // todo: wait and
         }
         Commands::View {
             stream_id,

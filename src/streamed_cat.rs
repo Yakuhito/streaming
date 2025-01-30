@@ -1,11 +1,12 @@
 use chia::{
+    consensus::gen::make_aggsig_final_message::u64_to_bytes,
     puzzles::{
         cat::{CatArgs, CatSolution},
         CoinProof, LineageProof,
     },
     sha2::Sha256,
 };
-use chia_protocol::{Bytes32, Coin};
+use chia_protocol::{Bytes, Bytes32, Coin};
 use chia_wallet_sdk::{CatLayer, DriverError, Layer, Puzzle, Spend, SpendContext};
 use clvm_traits::FromClvm;
 use clvmr::{Allocator, NodePtr};
@@ -146,11 +147,12 @@ impl StreamedCat {
         s.finalize().into()
     }
 
-    pub fn get_launch_hints(recipient: Bytes32. start_time: u64) -> Bytes32 {
-        let mut s = Sha256::new();
-        s.update(b"s");
-        s.update(recipient.as_slice());
-        s.finalize().into()
+    pub fn get_launch_hints(recipient: Bytes32, start_time: u64, end_time: u64) -> Vec<Bytes> {
+        let hint: Bytes = StreamedCat::get_hint(recipient).into();
+        let second_memo = u64_to_bytes(start_time);
+        let third_memo = u64_to_bytes(end_time);
+
+        vec![hint, second_memo.into(), third_memo.into()]
     }
 }
 
