@@ -400,6 +400,129 @@ async fn get_public_key(
     Ok(public_key)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn generate_spend_bundle(
+    sage_client: &SageClient,
+    latest_streamed_coin: StreamedCat,
+    public_key: PublicKey,
+    p2_puzzle_hash: Bytes32,
+    p2_address: &str,
+    fee: String,
+    claim_time: u64,
+    clawback: bool,
+) -> Result<Bytes32, CliError> {
+    let mut ctx = SpendContext::new();
+    let p2 = StandardLayer::new(public_key);
+    let p2_puzzle_ptr = p2.construct_puzzle(&mut ctx)?;
+    if ctx.tree_hash(p2_puzzle_ptr) != p2_puzzle_hash.into() {
+        eprintln!("Wallet is using non-standard puzzle :(");
+        return Err(CliError::InvalidStreamId());
+    }
+
+    let initial_send = sage_client
+        .send_xch(SendXch {
+            address: p2_address.to_string(),
+            amount: Amount(0),
+            fee: Amount(parse_amount(fee, false)?),
+            memos: vec![],
+            auto_submit: false,
+        })
+        .await?;
+
+    for spend in initial_send.coin_spends {
+        let parent_coin_info: [u8; 32] = hex::decode(spend.coin.parent_coin_info.replace("0x", ""))
+            .map_err(CliError::HexDecodingFailed)?
+            .try_into()
+            .unwrap();
+        let puzzle_hash: [u8; 32] = hex::decode(spend.coin.puzzle_hash.replace("0x", ""))
+            .map_err(CliError::HexDecodingFailed)?
+            .try_into()
+            .unwrap();
+        let coin = Coin::new(
+            Bytes32::from(parent_coin_info),
+            Bytes32::from(puzzle_hash),
+            spend.coin.amount,
+        );
+
+        let puzzle_reveal: Vec<u8> = hex::decode(spend.puzzle_reveal.replace("0x", "0"))
+            .map_err(CliError::HexDecodingFailed)?;
+        let solution: Vec<u8> =
+            hex::decode(spend.solution.replace("0x", "0")).map_err(CliError::HexDecodingFailed)?;
+
+        ctx.insert(CoinSpend {
+            coin,
+            puzzle_reveal: Program::from_bytes(&puzzle_reveal).unwrap(),
+            solution: Program::from_bytes(&solution).unwrap(),
+        });
+    }
+
+    let mut lead_coin_parent: Option<Bytes32> = None;
+    for input in initial_send.summary.inputs {
+        if input.coin_type != Some("xch".to_string()) {
+            continue;
+        }
+
+        if !input
+            .outputs
+            .iter()
+            .any(|c| c.amount == 0 && c.address == p2_address)
+        {
+            continue;
+        };
+
+        let lead_coin_parent_b32: [u8; 32] = hex::decode(input.coin_id.replace("0x", ""))?
+            .try_into()
+            .unwrap();
+        lead_coin_parent = Some(Bytes32::from(lead_coin_parent_b32));
+    }
+
+    let Some(lead_coin_parent) = lead_coin_parent else {
+        println!("Failed to find lead coin parent");
+        return Err(CliError::InvalidStreamId());
+    };
+
+    let lead_coin = Coin::new(lead_coin_parent, p2_puzzle_hash, 0);
+
+    let message_to_send = Bytes::new(u64_to_bytes(claim_time));
+    let coin_id_ptr = latest_streamed_coin
+        .coin
+        .coin_id()
+        .to_clvm(&mut ctx.allocator)
+        .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+    p2.spend(
+        &mut ctx,
+        lead_coin,
+        Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
+    )?;
+    latest_streamed_coin.spend(&mut ctx, claim_time, clawback)?;
+
+    println!("Spend bundle ready. Last confirmation - press 'Enter' to proceed");
+    let _ = std::io::stdin().read_line(&mut String::new());
+
+    let sign_request = SignCoinSpends {
+        coin_spends: ctx
+            .take()
+            .iter()
+            .map(|c| CoinSpendJson {
+                coin: CoinJson {
+                    parent_coin_info: "0x".to_string()
+                        + &hex::encode(c.coin.parent_coin_info.to_vec()),
+                    puzzle_hash: "0x".to_string() + &hex::encode(c.coin.puzzle_hash.to_vec()),
+                    amount: c.coin.amount,
+                },
+                puzzle_reveal: "0x".to_string() + &hex::encode(c.puzzle_reveal.to_vec()),
+                solution: "0x".to_string() + &hex::encode(c.solution.to_vec()),
+            })
+            .collect(),
+        auto_submit: true,
+        partial: false,
+    };
+
+    let _ = sage_client.sign_coin_spends(sign_request).await;
+
+    Ok(latest_streamed_coin.coin.coin_id())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), CliError> {
     let args = Cli::parse();
@@ -570,7 +693,6 @@ async fn main() -> Result<(), CliError> {
 
             println!("Fetching latest unspent coin...");
 
-            let mut ctx = SpendContext::new();
             let latest_streamed_coin = sync_stream(
                 stream_id,
                 &cli,
@@ -618,119 +740,105 @@ async fn main() -> Result<(), CliError> {
                 get_public_key(&sage_client, &recipient_address, max_derivations, hardened).await?;
 
             println!("Building spend bundle...");
-
-            let p2 = StandardLayer::new(public_key);
-            let p2_puzzle_ptr = p2.construct_puzzle(&mut ctx)?;
-            if ctx.tree_hash(p2_puzzle_ptr) != recipient.into() {
-                eprintln!("Recipient is using non-standard puzzle :(");
-                return Ok(());
-            }
-
-            let initial_send = sage_client
-                .send_xch(SendXch {
-                    address: recipient_address.clone(),
-                    amount: Amount(0),
-                    fee: Amount(parse_amount(fee, false)?),
-                    memos: vec![],
-                    auto_submit: false,
-                })
-                .await?;
-
-            for spend in initial_send.coin_spends {
-                let parent_coin_info: [u8; 32] =
-                    hex::decode(spend.coin.parent_coin_info.replace("0x", ""))
-                        .map_err(CliError::HexDecodingFailed)?
-                        .try_into()
-                        .unwrap();
-                let puzzle_hash: [u8; 32] = hex::decode(spend.coin.puzzle_hash.replace("0x", ""))
-                    .map_err(CliError::HexDecodingFailed)?
-                    .try_into()
-                    .unwrap();
-                let coin = Coin::new(
-                    Bytes32::from(parent_coin_info),
-                    Bytes32::from(puzzle_hash),
-                    spend.coin.amount,
-                );
-
-                let puzzle_reveal: Vec<u8> = hex::decode(spend.puzzle_reveal.replace("0x", "0"))
-                    .map_err(CliError::HexDecodingFailed)?;
-                let solution: Vec<u8> = hex::decode(spend.solution.replace("0x", "0"))
-                    .map_err(CliError::HexDecodingFailed)?;
-
-                ctx.insert(CoinSpend {
-                    coin,
-                    puzzle_reveal: Program::from_bytes(&puzzle_reveal).unwrap(),
-                    solution: Program::from_bytes(&solution).unwrap(),
-                });
-            }
-
-            let mut lead_coin_parent: Option<Bytes32> = None;
-            for input in initial_send.summary.inputs {
-                if input.coin_type != Some("xch".to_string()) {
-                    continue;
-                }
-
-                if !input
-                    .outputs
-                    .iter()
-                    .any(|c| c.amount == 0 && c.address == recipient_address)
-                {
-                    continue;
-                };
-
-                let lead_coin_parent_b32: [u8; 32] = hex::decode(input.coin_id.replace("0x", ""))?
-                    .try_into()
-                    .unwrap();
-                lead_coin_parent = Some(Bytes32::from(lead_coin_parent_b32));
-            }
-
-            let Some(lead_coin_parent) = lead_coin_parent else {
-                println!("Failed to find lead coin parent");
-                return Ok(());
-            };
-
-            let lead_coin = Coin::new(lead_coin_parent, recipient, 0);
-
-            let message_to_send = Bytes::new(u64_to_bytes(claim_time));
-            let coin_id_ptr = latest_streamed_coin
-                .coin
-                .coin_id()
-                .to_clvm(&mut ctx.allocator)
-                .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-            p2.spend(
-                &mut ctx,
-                lead_coin,
-                Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
-            )?;
-            latest_streamed_coin.spend(&mut ctx, claim_time, false)?;
-
-            println!("Spend bundle ready. Last confirmation - press 'Enter' to proceed");
-            let _ = std::io::stdin().read_line(&mut String::new());
-
-            let sign_request = SignCoinSpends {
-                coin_spends: ctx
-                    .take()
-                    .iter()
-                    .map(|c| CoinSpendJson {
-                        coin: CoinJson {
-                            parent_coin_info: "0x".to_string()
-                                + &hex::encode(c.coin.parent_coin_info.to_vec()),
-                            puzzle_hash: "0x".to_string()
-                                + &hex::encode(c.coin.puzzle_hash.to_vec()),
-                            amount: c.coin.amount,
-                        },
-                        puzzle_reveal: "0x".to_string() + &hex::encode(c.puzzle_reveal.to_vec()),
-                        solution: "0x".to_string() + &hex::encode(c.solution.to_vec()),
-                    })
-                    .collect(),
-                auto_submit: true,
-                partial: false,
-            };
-
-            let _ = sage_client.sign_coin_spends(sign_request).await;
+            let coin_id = generate_spend_bundle(
+                &sage_client,
+                latest_streamed_coin,
+                public_key,
+                recipient,
+                &recipient_address,
+                fee,
+                claim_time,
+                false,
+            )
+            .await?;
 
             println!("Waiting for transaction to be confirmed...");
-            wait_for_coin(latest_streamed_coin.coin.coin_id(), &cli, true).await?;
+            wait_for_coin(coin_id, &cli, true).await?;
+            println!("Confirmed :)");
+        }
+        Commands::Clawback {
+            stream_id,
+            cert_path,
+            fee,
+            mainnet,
+            hardened,
+            max_derivations,
+        } => {
+            let cert_path = expand_tilde(cert_path)?;
+
+            let cli = if mainnet {
+                CoinsetClient::mainnet()
+            } else {
+                CoinsetClient::testnet11()
+            };
+
+            println!("Fetching latest unspent coin...");
+
+            let latest_streamed_coin = sync_stream(
+                stream_id,
+                &cli,
+                if mainnet { "s" } else { "ts" },
+                if mainnet { "xch" } else { "txch" },
+                true,
+                false,
+            )
+            .await?
+            .unwrap();
+
+            let latest_timestamp = get_latest_timestamp(&cli).await?;
+
+            println!("Latest block timestamp: {}", latest_timestamp);
+            let claim_time = latest_timestamp + 1;
+            let claim_amount = latest_streamed_coin.amount_to_be_paid(claim_time);
+
+            println!(
+                "Claim amount: {:.3} CATs; Return amount: {:.3} CATs",
+                claim_amount as f64 / 1000.0,
+                (latest_streamed_coin.coin.amount - claim_amount) as f64 / 1000.0
+            );
+            println!("Press 'Enter' to proceed");
+            let _ = std::io::stdin().read_line(&mut String::new());
+
+            let clawback_ph = latest_streamed_coin.clawback_ph;
+            let clawback_address =
+                encode_address(clawback_ph.into(), if mainnet { "xch" } else { "txch" }).map_err(
+                    |e| {
+                        eprintln!("Failed to encode address: {}", e);
+                        CliError::InvalidStreamId()
+                    },
+                )?;
+            println!(
+                "Searching for key associated with address: {}",
+                clawback_address
+            );
+
+            let cert_file = cert_path.join("wallet.crt");
+            let key_file = cert_path.join("wallet.key");
+
+            let sage_client =
+                SageClient::new(&cert_file, &key_file, "https://localhost:9257".to_string())
+                    .map_err(|e| {
+                        eprintln!("Failed to create Sage client: {}", e);
+                        CliError::HomeDirectoryNotFound
+                    })?;
+            let public_key =
+                get_public_key(&sage_client, &clawback_address, max_derivations, hardened).await?;
+
+            println!("Building spend bundle...");
+            let coin_id = generate_spend_bundle(
+                &sage_client,
+                latest_streamed_coin,
+                public_key,
+                clawback_ph,
+                &clawback_address,
+                fee,
+                claim_time,
+                true,
+            )
+            .await?;
+
+            println!("Waiting for transaction to be confirmed...");
+            wait_for_coin(coin_id, &cli, true).await?;
             println!("Confirmed :)");
         }
     }
