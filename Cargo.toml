@@ -20,8 +20,10 @@ serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 bech32 = "0.9.1"
 chrono = "0.4.39"
+indexmap = { version = "2.0", features = ["serde"] }
 
 chia-wallet-sdk = { git = "https://github.com/xch-dev/chia-wallet-sdk.git", rev = "cf1080e3d30c061e4d8a62e36c41abf2ce2310bb" }
+sage-api = { version = "0.9.5", git = "https://github.com/xch-dev/sage.git" }
 
 [dev-dependencies]
 anyhow = "1.0.95"

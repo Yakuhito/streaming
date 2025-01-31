@@ -1,71 +1,10 @@
 use reqwest::Identity;
-use serde::{Deserialize, Serialize};
+use sage_api::{
+    GetDerivations, GetDerivationsResponse, SendCat, SendCatResponse, SendXch, SignCoinSpends,
+    SignCoinSpendsResponse,
+};
 use std::path::Path;
 use thiserror::Error;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Amount(pub u64);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SendCat {
-    pub asset_id: String,
-    pub address: String,
-    pub amount: Amount,
-    pub fee: Amount,
-    #[serde(default)]
-    pub memos: Vec<String>,
-    #[serde(default)]
-    pub auto_submit: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CoinDetail {
-    pub coin_id: String,
-    pub amount: u64,
-    pub address: String,
-    #[serde(rename = "type")]
-    pub coin_type: Option<String>,
-    pub asset_id: Option<String>,
-    pub name: Option<String>,
-    pub ticker: Option<String>,
-    pub icon_url: Option<String>,
-    pub outputs: Vec<Output>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Output {
-    pub coin_id: String,
-    pub amount: u64,
-    pub address: String,
-    pub receiving: bool,
-    pub burning: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Summary {
-    pub fee: u64,
-    pub inputs: Vec<CoinDetail>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeserializableCoinSpend {
-    pub coin: DeserializableCoin,
-    pub puzzle_reveal: String,
-    pub solution: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DeserializableCoin {
-    pub parent_coin_info: String,
-    pub puzzle_hash: String,
-    pub amount: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SendCatResponse {
-    pub summary: Summary,
-    pub coin_spends: Vec<DeserializableCoinSpend>,
-}
 
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -150,7 +89,10 @@ impl SageClient {
         Ok(response_body)
     }
 
-    pub async fn sign_coin_spends(&self, request: SignCoinSpends) -> Result<String, ClientError> {
+    pub async fn sign_coin_spends(
+        &self,
+        request: SignCoinSpends,
+    ) -> Result<SignCoinSpendsResponse, ClientError> {
         let url = format!("{}/sign_coin_spends", self.base_url);
 
         let response = self.client.post(&url).json(&request).send().await?;
@@ -163,61 +105,7 @@ impl SageClient {
             )));
         }
 
-        let response_body = response.json::<String>().await?;
+        let response_body = response.json::<SignCoinSpendsResponse>().await?;
         Ok(response_body)
     }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct GetDerivations {
-    #[serde(default)]
-    pub hardened: bool,
-    pub offset: u32,
-    pub limit: u32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Derivation {
-    pub index: u32,
-    pub public_key: String,
-    pub address: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GetDerivationsResponse {
-    pub derivations: Vec<Derivation>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SendXch {
-    pub address: String,
-    pub amount: Amount,
-    pub fee: Amount,
-    #[serde(default)]
-    pub memos: Vec<String>,
-    #[serde(default)]
-    pub auto_submit: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CoinJson {
-    pub parent_coin_info: String,
-    pub puzzle_hash: String,
-    pub amount: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CoinSpendJson {
-    pub coin: CoinJson,
-    pub puzzle_reveal: String,
-    pub solution: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignCoinSpends {
-    pub coin_spends: Vec<CoinSpendJson>,
-    #[serde(default)]
-    pub auto_submit: bool,
-    #[serde(default)]
-    pub partial: bool,
 }

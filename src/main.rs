@@ -8,17 +8,17 @@ use chia_wallet_sdk::{
 };
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
+use client::SageClient;
 use clvm_traits::ToClvm;
 use dirs::home_dir;
+use sage_api::{
+    Amount, AssetKind, CoinJson, CoinSpendJson, GetDerivations, SendCat, SendXch, SignCoinSpends,
+};
 use std::path::{Path, PathBuf};
 use streaming::{StreamPuzzle2ndCurryArgs, StreamedCat};
 use thiserror::Error;
 
 mod client;
-
-use client::{
-    Amount, CoinJson, CoinSpendJson, GetDerivations, SageClient, SendCat, SendXch, SignCoinSpends,
-};
 
 #[derive(Debug, Parser)]
 #[command(name = "streaming")]
@@ -425,8 +425,8 @@ async fn generate_spend_bundle(
     let initial_send = sage_client
         .send_xch(SendXch {
             address: p2_address.to_string(),
-            amount: Amount(0),
-            fee: Amount(parse_amount(fee, false)?),
+            amount: Amount::Number(0),
+            fee: Amount::Number(parse_amount(fee, false)?),
             memos: vec![],
             auto_submit: false,
         })
@@ -444,7 +444,10 @@ async fn generate_spend_bundle(
         let coin = Coin::new(
             Bytes32::from(parent_coin_info),
             Bytes32::from(puzzle_hash),
-            spend.coin.amount,
+            match spend.coin.amount {
+                Amount::Number(amount) => amount,
+                Amount::String(amount) => amount.parse::<u64>().unwrap(),
+            },
         );
 
         let puzzle_reveal: Vec<u8> = hex::decode(spend.puzzle_reveal.replace("0x", "0"))
@@ -461,14 +464,14 @@ async fn generate_spend_bundle(
 
     let mut lead_coin_parent: Option<Bytes32> = None;
     for input in initial_send.summary.inputs {
-        if input.coin_type != Some("xch".to_string()) {
+        let AssetKind::Xch = input.kind else {
             continue;
-        }
+        };
 
         if !input
             .outputs
             .iter()
-            .any(|c| c.amount == 0 && c.address == p2_address)
+            .any(|c| c.amount == Amount::Number(0) && c.address == p2_address)
         {
             continue;
         };
@@ -508,21 +511,22 @@ async fn generate_spend_bundle(
             .iter()
             .map(|c| CoinSpendJson {
                 coin: CoinJson {
-                    parent_coin_info: "0x".to_string()
-                        + &hex::encode(c.coin.parent_coin_info.to_vec()),
-                    puzzle_hash: "0x".to_string() + &hex::encode(c.coin.puzzle_hash.to_vec()),
-                    amount: c.coin.amount,
+                    parent_coin_info: format!(
+                        "0x{}",
+                        hex::encode(c.coin.parent_coin_info.to_vec())
+                    ),
+                    puzzle_hash: format!("0x{}", hex::encode(c.coin.puzzle_hash.to_vec())),
+                    amount: Amount::Number(c.coin.amount),
                 },
-                puzzle_reveal: "0x".to_string() + &hex::encode(c.puzzle_reveal.to_vec()),
-                solution: "0x".to_string() + &hex::encode(c.solution.to_vec()),
+                puzzle_reveal: format!("0x{}", hex::encode(c.puzzle_reveal.to_vec())),
+                solution: format!("0x{}", hex::encode(c.solution.to_vec())),
             })
             .collect(),
         auto_submit: true,
         partial: false,
     };
 
-    let resp = sage_client.sign_coin_spends(sign_request).await?;
-    println!("Sign coin spends response from sage: {:?}", resp);
+    let _ = sage_client.sign_coin_spends(sign_request).await?;
 
     Ok(latest_streamed_coin.coin.coin_id())
 }
@@ -608,8 +612,8 @@ async fn main() -> Result<(), CliError> {
             let send_cat_request = SendCat {
                 asset_id: hex::encode(asset_id),
                 address: streaming_cat_address.clone(),
-                amount: Amount(cat_amount),
-                fee: Amount(parse_amount(fee, false)?),
+                amount: Amount::Number(cat_amount),
+                fee: Amount::Number(parse_amount(fee, false)?),
                 memos: StreamedCat::get_launch_hints(
                     Bytes32::new(recipient_puzzle_hash),
                     clawback_ph.into(),
@@ -626,9 +630,11 @@ async fn main() -> Result<(), CliError> {
 
             let mut streaming_coin_id: Option<String> = None;
             for coin in response.summary.inputs {
-                if coin.coin_type != Some("cat".to_string())
-                    || coin.asset_id != Some(hex::encode(asset_id))
-                {
+                if let AssetKind::Cat { asset_id, .. } = coin.kind {
+                    if asset_id.replace("0x", "") != hex::encode(asset_id) {
+                        continue;
+                    }
+                } else {
                     continue;
                 }
 
@@ -711,7 +717,11 @@ async fn main() -> Result<(), CliError> {
             let latest_timestamp = get_latest_timestamp(&cli).await?;
 
             println!("Latest block timestamp: {}", latest_timestamp);
-            let claim_time = latest_timestamp - 1;
+            let claim_time = if latest_timestamp - 1 <= latest_streamed_coin.end_time {
+                latest_timestamp - 1
+            } else {
+                latest_streamed_coin.end_time
+            };
             let claim_amount = latest_streamed_coin.amount_to_be_paid(claim_time);
 
             println!("Claim amount: {:.3} CATs", claim_amount as f64 / 1000.0);
@@ -792,11 +802,15 @@ async fn main() -> Result<(), CliError> {
             let latest_timestamp = get_latest_timestamp(&cli).await?;
 
             println!("Latest block timestamp: {}", latest_timestamp);
-            let claim_time = latest_timestamp + 1;
+            let claim_time = if latest_timestamp + 300 <= latest_streamed_coin.end_time {
+                latest_timestamp + 300
+            } else {
+                latest_streamed_coin.end_time
+            };
             let claim_amount = latest_streamed_coin.amount_to_be_paid(claim_time);
 
             println!(
-                "Claim amount: {:.3} CATs; Return amount: {:.3} CATs",
+                "Approx. claim amount: {:.3} CATs; Approx. return amount: {:.3} CATs",
                 claim_amount as f64 / 1000.0,
                 (latest_streamed_coin.coin.amount - claim_amount) as f64 / 1000.0
             );
@@ -831,11 +845,11 @@ async fn main() -> Result<(), CliError> {
             println!("Building spend bundle...");
             let coin_id = generate_spend_bundle(
                 &sage_client,
-                latest_streamed_coin,
+                latest_streamed_coin.clone(),
                 public_key,
                 clawback_ph,
                 &clawback_address,
-                fee,
+                fee.clone(),
                 claim_time,
                 true,
             )
