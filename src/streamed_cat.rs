@@ -290,9 +290,9 @@ mod tests {
     };
     use chia_protocol::Bytes;
     use chia_wallet_sdk::{test_secret_key, Cat, Conditions, Simulator, StandardLayer};
-    use clvm_traits::{clvm_quote, ToClvm};
+    use clvm_traits::ToClvm;
     use clvm_utils::tree_hash;
-    use clvmr::serde::{node_from_bytes, node_to_bytes};
+    use clvmr::serde::node_from_bytes;
 
     use crate::{STREAM_PUZZLE, STREAM_PUZZLE_HASH};
 
