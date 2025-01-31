@@ -794,9 +794,24 @@ async fn main() -> Result<(), CliError> {
                 partial: false,
             };
 
-            let response = sage_client.sign_coin_spends(sign_request).await?;
+            let _ = sage_client.sign_coin_spends(sign_request).await;
 
-            println!("Response: {}", response);
+            println!("Waiting for transaction to be confirmed...");
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+                let coin_resp = cli
+                    .get_coin_record_by_name(latest_streamed_coin.coin.coin_id())
+                    .await?;
+
+                if let Some(coin_record) = coin_resp.coin_record {
+                    if coin_record.spent {
+                        break;
+                    }
+                }
+            }
+
+            println!("Confirmed :)");
         }
     }
 

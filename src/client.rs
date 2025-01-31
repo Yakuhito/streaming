@@ -152,6 +152,7 @@ impl SageClient {
 
     pub async fn sign_coin_spends(&self, request: SignCoinSpends) -> Result<String, ClientError> {
         let url = format!("{}/sign_coin_spends", self.base_url);
+
         let response = self.client.post(&url).json(&request).send().await?;
 
         if !response.status().is_success() {
