@@ -327,7 +327,7 @@ async fn main() -> Result<(), CliError> {
                 if coin_record.spent_block_index == 0 {
                     println!(
                         "  Coin {} currently unspent.",
-                        hex::encode(stream_coin_id.to_vec())
+                        hex::encode(latest_coin_id.to_vec())
                     );
                     break;
                 }
@@ -392,7 +392,7 @@ async fn main() -> Result<(), CliError> {
                 } else {
                     println!(
                         "  Coin {} spent at block {} to claim {} CATs.",
-                        hex::encode(stream_coin_id.to_vec()),
+                        hex::encode(latest_coin_id.to_vec()),
                         coin_record.spent_block_index,
                         (coin_record.coin.amount - new_stream.coin.amount) as f64 / 1000.0
                     );
@@ -532,15 +532,25 @@ async fn main() -> Result<(), CliError> {
 
             if let Some(unspent_coin_records) = unspent.coin_records {
                 for coin_record in unspent_coin_records {
-                    println!("A");
+                    if coin_record.spent {
+                        continue;
+                    }
+
+                    let parent_coin_record = cli
+                        .get_coin_record_by_name(coin_record.coin.parent_coin_info)
+                        .await
+                        .map_err(CliError::Reqwest)?;
+                    let Some(coin_record) = parent_coin_record.coin_record else {
+                        continue;
+                    };
+
                     let puzzle_and_solution = cli
                         .get_puzzle_and_solution(
-                            coin_record.coin.parent_coin_info,
-                            Some(coin_record.confirmed_block_index),
+                            coin_record.coin.coin_id(),
+                            Some(coin_record.spent_block_index),
                         )
                         .await
                         .map_err(CliError::Reqwest)?;
-                    println!("B");
 
                     let Some(coin_solution) = puzzle_and_solution.coin_solution else {
                         continue;
