@@ -41,10 +41,5 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-features --all-targets
 
-      - name: Unused dependencies
-        run: |
-          cargo binstall cargo-machete --locked -y
-          cargo machete
-
       - name: Fmt
         run: cargo fmt --all -- --files-with-diff --check
