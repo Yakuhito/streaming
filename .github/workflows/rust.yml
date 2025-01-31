@@ -26,6 +26,10 @@ jobs:
       - name: Cargo binstall
         run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
 
+      - name: Install thing
+      - run: apt update && apt-get install -y libgtk-3-dev
+
+
       - name: Instal cargo-workspaces
         run: cargo binstall cargo-workspaces --locked -y
 
