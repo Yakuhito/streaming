@@ -21,7 +21,7 @@
         (list
             (list ASSERT_MY_AMOUNT my_amount)
             (i clawback 
-                (list ASSERT_BEFORE_SECONDS_ABSOLUTE (+ payment_time 1))
+                (list ASSERT_BEFORE_SECONDS_ABSOLUTE payment_time 1)
                 ; else
                 (list ASSERT_SECONDS_ABSOLUTE payment_time)
             )
