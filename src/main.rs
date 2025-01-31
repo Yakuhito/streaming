@@ -132,6 +132,172 @@ fn parse_amount(amount: String, is_cat: bool) -> Result<u64, CliError> {
     }
 }
 
+async fn sync_stream(
+    stream_id: String,
+    cli: CoinsetClient,
+    stream_prefix: &str,
+    prefix: &str,
+    print: bool,
+) -> Result<Option<StreamedCat>, CliError> {
+    println!("Viewing stream with id {stream_id}");
+
+    let (stream_coin_id, decoded_stream_prefix) =
+        decode_address(&stream_id).map_err(|_| CliError::InvalidStreamId())?;
+    if decoded_stream_prefix != stream_prefix {
+        return Err(CliError::InvalidStreamId());
+    }
+    let stream_coin_id = Bytes32::from(stream_coin_id);
+
+    let mut first_run = true;
+    let mut ctx = SpendContext::new();
+    let mut latest_coin_id = stream_coin_id;
+    let mut latest_stream = None;
+
+    loop {
+        let coin_record_resp = cli
+            .get_coin_record_by_name(latest_coin_id)
+            .await
+            .map_err(CliError::Reqwest)?;
+
+        if !coin_record_resp.success {
+            println!("Failed to get coin record :(");
+            return Ok(None);
+        }
+
+        let Some(coin_record) = coin_record_resp.coin_record else {
+            println!("Coin record not available");
+            return Ok(None);
+        };
+
+        if first_run {
+            // Parse parent spend to get first stream
+            latest_coin_id = coin_record.coin.parent_coin_info;
+            first_run = false;
+            continue;
+        }
+
+        if coin_record.spent_block_index == 0 {
+            if print {
+                println!(
+                    "  Coin {} currently unspent.",
+                    hex::encode(latest_coin_id.to_vec())
+                );
+            }
+            break;
+        }
+
+        let puzzle_and_solution = cli
+            .get_puzzle_and_solution(
+                coin_record.coin.coin_id(),
+                Some(coin_record.spent_block_index),
+            )
+            .await
+            .map_err(CliError::Reqwest)?;
+        let Some(coin_solution) = puzzle_and_solution.coin_solution else {
+            println!("Failed to get puzzle and solution");
+            return Ok(None);
+        };
+
+        let parent_puzzle = coin_solution
+            .puzzle_reveal
+            .to_clvm(&mut ctx.allocator)
+            .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+        let parent_solution = coin_solution
+            .solution
+            .to_clvm(&mut ctx.allocator)
+            .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+        let parent_puzzle = Puzzle::parse(&ctx.allocator, parent_puzzle);
+
+        let (new_stream, clawbacked) = StreamedCat::from_parent_spend(
+            &mut ctx.allocator,
+            coin_record.coin,
+            parent_puzzle,
+            parent_solution,
+        )?;
+        let Some(new_stream) = new_stream else {
+            if clawbacked {
+                if print {
+                    println!("  Streamed CAT was clawed back.");
+                }
+            } else {
+                println!("Failed to parse streamed CAT");
+            }
+            return Ok(None);
+        };
+
+        if latest_stream.is_none() && print {
+            println!("Asset id: {}", hex::encode(new_stream.asset_id.to_vec()));
+            println!(
+                "Total amount: {:.3}",
+                new_stream.coin.amount as f64 / 1000.0
+            );
+            println!(
+                "Recipient address: {}",
+                encode_address(new_stream.recipient.into(), prefix).unwrap()
+            );
+            println!(
+                "Clawback address: {}",
+                encode_address(new_stream.clawback_ph.into(), prefix).unwrap()
+            );
+            println!(
+                "Start time: {} (local: {})",
+                new_stream.last_payment_time,
+                Local
+                    .timestamp_opt(new_stream.last_payment_time as i64, 0)
+                    .unwrap()
+                    .format("%Y-%m-%d %H:%M:%S")
+            );
+            println!(
+                "End time: {} (local: {})",
+                new_stream.end_time,
+                Local
+                    .timestamp_opt(new_stream.end_time as i64, 0)
+                    .unwrap()
+                    .format("%Y-%m-%d %H:%M:%S")
+            );
+            println!("Spends:");
+        } else if print {
+            println!(
+                "  Coin {} spent at block {} to claim {} CATs.",
+                hex::encode(latest_coin_id.to_vec()),
+                coin_record.spent_block_index,
+                (coin_record.coin.amount - new_stream.coin.amount) as f64 / 1000.0
+            );
+        }
+
+        latest_coin_id = new_stream.coin.coin_id();
+        latest_stream = Some(new_stream);
+    }
+
+    if print {
+        if let Some(latest_stream) = latest_stream {
+            println!(
+                "Remaining (unclaimed) amount: {:.3}",
+                latest_stream.coin.amount as f64 / 1000.0
+            );
+            println!(
+                "Latest claim time: {} (local: {})",
+                latest_stream.last_payment_time,
+                Local
+                    .timestamp_opt(latest_stream.last_payment_time as i64, 0)
+                    .unwrap()
+                    .format("%Y-%m-%d %H:%M:%S")
+            );
+
+            let time_now = Local::now().timestamp() as u64;
+            let claimable = latest_stream.coin.amount
+                * (time_now - latest_stream.last_payment_time)
+                / (latest_stream.end_time - latest_stream.last_payment_time);
+
+            println!("Claimable right now: {:.3} CATs", claimable as f64 / 1000.0);
+
+            return Ok(Some(latest_stream));
+        }
+    }
+
+    Ok(latest_stream)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), CliError> {
     let args = Cli::parse();
@@ -261,7 +427,7 @@ async fn main() -> Result<(), CliError> {
                 .map_err(|_| CliError::UnknownStreamingCoinId)?;
             println!(
                 "Stream id: {}",
-                encode_address(streaming_coin_id, "s").unwrap()
+                encode_address(streaming_coin_id, if mainnet { "xch" } else { "txch" }).unwrap()
             );
 
             println!("Waiting for mempool item to be confirmed...");
@@ -287,167 +453,14 @@ async fn main() -> Result<(), CliError> {
             println!("Confimed! :)");
         }
         Commands::View { stream_id, mainnet } => {
-            println!("Viewing stream with id {stream_id}");
-
-            let (stream_coin_id, prefix) =
-                decode_address(&stream_id).map_err(|_| CliError::InvalidStreamId())?;
-            if prefix != "s" {
-                return Err(CliError::InvalidStreamId());
-            }
-            let stream_coin_id = Bytes32::from(stream_coin_id);
-
             let cli = if mainnet {
                 CoinsetClient::mainnet()
             } else {
                 CoinsetClient::testnet11()
             };
-
-            let mut first_run = true;
-            let mut ctx = SpendContext::new();
-            let mut latest_coin_id = stream_coin_id;
-            let mut latest_stream = None;
-
-            loop {
-                let coin_record_resp = cli
-                    .get_coin_record_by_name(latest_coin_id)
-                    .await
-                    .map_err(CliError::Reqwest)?;
-
-                if !coin_record_resp.success {
-                    println!("Failed to get coin record :(");
-                    break;
-                }
-
-                let Some(coin_record) = coin_record_resp.coin_record else {
-                    println!("Coin record ot available");
-                    break;
-                };
-
-                if first_run {
-                    // Parse parent spend to get first stream
-                    latest_coin_id = coin_record.coin.parent_coin_info;
-                    first_run = false;
-                    continue;
-                }
-
-                if coin_record.spent_block_index == 0 {
-                    println!(
-                        "  Coin {} currently unspent.",
-                        hex::encode(latest_coin_id.to_vec())
-                    );
-                    break;
-                }
-
-                let puzzle_and_solution = cli
-                    .get_puzzle_and_solution(
-                        coin_record.coin.coin_id(),
-                        Some(coin_record.spent_block_index),
-                    )
-                    .await
-                    .map_err(CliError::Reqwest)?;
-                let Some(coin_solution) = puzzle_and_solution.coin_solution else {
-                    println!("Failed to get puzzle and solution");
-                    break;
-                };
-
-                let parent_puzzle = coin_solution
-                    .puzzle_reveal
-                    .to_clvm(&mut ctx.allocator)
-                    .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-                let parent_solution = coin_solution
-                    .solution
-                    .to_clvm(&mut ctx.allocator)
-                    .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-                let parent_puzzle = Puzzle::parse(&ctx.allocator, parent_puzzle);
-
-                let (new_stream, clawbacked) = StreamedCat::from_parent_spend(
-                    &mut ctx.allocator,
-                    coin_record.coin,
-                    parent_puzzle,
-                    parent_solution,
-                )?;
-                let Some(new_stream) = new_stream else {
-                    if clawbacked {
-                        println!("Streamed CAT was clawed back.");
-                    } else {
-                        println!("Failed to parse streamed CAT");
-                    }
-                    break;
-                };
-
-                if latest_stream.is_none() {
-                    println!("Asset id: {}", hex::encode(new_stream.asset_id.to_vec()));
-                    println!(
-                        "Total amount: {:.3}",
-                        new_stream.coin.amount as f64 / 1000.0
-                    );
-                    println!(
-                        "Recipient address: {}",
-                        encode_address(
-                            new_stream.recipient.into(),
-                            if mainnet { "xch" } else { "txch" }
-                        )
-                        .unwrap()
-                    );
-                    println!(
-                        "Clawback address: {}",
-                        encode_address(
-                            new_stream.clawback_ph.into(),
-                            if mainnet { "xch" } else { "txch" }
-                        )
-                        .unwrap()
-                    );
-                    println!(
-                        "Start time: {} (local: {})",
-                        new_stream.last_payment_time,
-                        Local
-                            .timestamp_opt(new_stream.last_payment_time as i64, 0)
-                            .unwrap()
-                            .format("%Y-%m-%d %H:%M:%S")
-                    );
-                    println!(
-                        "End time: {} (local: {})",
-                        new_stream.end_time,
-                        Local
-                            .timestamp_opt(new_stream.end_time as i64, 0)
-                            .unwrap()
-                            .format("%Y-%m-%d %H:%M:%S")
-                    );
-                    println!("Spends:");
-                } else {
-                    println!(
-                        "  Coin {} spent at block {} to claim {} CATs.",
-                        hex::encode(latest_coin_id.to_vec()),
-                        coin_record.spent_block_index,
-                        (coin_record.coin.amount - new_stream.coin.amount) as f64 / 1000.0
-                    );
-                }
-
-                latest_coin_id = new_stream.coin.coin_id();
-                latest_stream = Some(new_stream);
-            }
-
-            if let Some(latest_stream) = latest_stream {
-                println!(
-                    "Remaining (unclaimed) amount: {:.3}",
-                    latest_stream.coin.amount as f64 / 1000.0
-                );
-                println!(
-                    "Latest claim time: {} (local: {})",
-                    latest_stream.last_payment_time,
-                    Local
-                        .timestamp_opt(latest_stream.last_payment_time as i64, 0)
-                        .unwrap()
-                        .format("%Y-%m-%d %H:%M:%S")
-                );
-
-                let time_now = Local::now().timestamp() as u64;
-                let claimable = latest_stream.coin.amount
-                    * (time_now - latest_stream.last_payment_time)
-                    / (latest_stream.end_time - latest_stream.last_payment_time);
-
-                println!("Claimable right now: {:.3} CATs", claimable as f64 / 1000.0);
-            }
+            let stream_prefix = if mainnet { "s" } else { "ts" };
+            let prefix = if mainnet { "xch" } else { "txch" };
+            let _ = sync_stream(stream_id, cli, stream_prefix, prefix, true).await?;
         }
         Commands::Claim {
             stream_id,
