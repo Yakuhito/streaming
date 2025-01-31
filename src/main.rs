@@ -37,6 +37,7 @@ enum Commands {
         start_timestamp: u64,
         end_timestamp: u64,
         recipient: String,
+        clawback_address: String,
         #[arg(long, default_value = "~/.local/share/com.rigidnetwork.sage/ssl")]
         cert_path: String,
         #[arg(long, default_value = "0.0001")]
@@ -142,6 +143,7 @@ async fn main() -> Result<(), CliError> {
             start_timestamp,
             end_timestamp,
             recipient,
+            clawback_address,
             cert_path,
             fee,
             mainnet,
@@ -161,11 +163,14 @@ async fn main() -> Result<(), CliError> {
 
             let (recipient_puzzle_hash, _prefix) =
                 decode_address(&recipient).map_err(CliError::Address)?;
+            let (clawback_ph, _prefix) =
+                decode_address(&clawback_address).map_err(CliError::Address)?;
             let cat_amount = parse_amount(amount, true)?;
 
             let asset_id: [u8; 32] = asset_id.try_into().map_err(|_| CliError::InvalidAssetId)?;
             let target_inner_puzzle_hash = StreamPuzzle2ndCurryArgs::curry_tree_hash(
                 Bytes32::new(recipient_puzzle_hash),
+                clawback_ph.into(),
                 end_timestamp,
                 start_timestamp,
             );
@@ -212,6 +217,7 @@ async fn main() -> Result<(), CliError> {
                 fee: Amount(parse_amount(fee, false)?),
                 memos: StreamedCat::get_launch_hints(
                     Bytes32::new(recipient_puzzle_hash),
+                    clawback_ph.into(),
                     start_timestamp,
                     end_timestamp,
                 )
@@ -371,7 +377,22 @@ async fn main() -> Result<(), CliError> {
                         "Total amount: {:.3}",
                         new_stream.coin.amount as f64 / 1000.0
                     );
-                    println!("Recipient: {}", new_stream.recipient);
+                    println!(
+                        "Recipient address: {}",
+                        encode_address(
+                            new_stream.recipient.into(),
+                            if mainnet { "xch" } else { "txch" }
+                        )
+                        .unwrap()
+                    );
+                    println!(
+                        "Clawback address: {}",
+                        encode_address(
+                            new_stream.clawback_ph.into(),
+                            if mainnet { "xch" } else { "txch" }
+                        )
+                        .unwrap()
+                    );
                     println!(
                         "Start time: {} (local: {})",
                         new_stream.last_payment_time,
@@ -769,7 +790,7 @@ async fn main() -> Result<(), CliError> {
                 lead_coin,
                 Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
             )?;
-            latest_streamed_coin.spend(&mut ctx, claim_time)?;
+            latest_streamed_coin.spend(&mut ctx, claim_time, false)?;
 
             println!("Spend bundle ready. Last confirmation - press 'Enter' to proceed");
             let _ = std::io::stdin().read_line(&mut String::new());

@@ -25,6 +25,7 @@ pub struct StreamedCat {
     pub inner_puzzle_hash: Bytes32,
 
     pub recipient: Bytes32,
+    pub clawback_ph: Bytes32,
     pub end_time: u64,
     pub last_payment_time: u64,
 }
@@ -35,6 +36,7 @@ impl StreamedCat {
         asset_id: Bytes32,
         proof: LineageProof,
         recipient: Bytes32,
+        clawback_ph: Bytes32,
         end_time: u64,
         last_payment_time: u64,
     ) -> Self {
@@ -42,10 +44,16 @@ impl StreamedCat {
             coin,
             asset_id,
             proof,
-            inner_puzzle_hash: StreamLayer::new(recipient, end_time, last_payment_time)
-                .puzzle_hash()
-                .into(),
+            inner_puzzle_hash: StreamLayer::new(
+                recipient,
+                clawback_ph,
+                end_time,
+                last_payment_time,
+            )
+            .puzzle_hash()
+            .into(),
             recipient,
+            clawback_ph,
             end_time,
             last_payment_time,
         }
@@ -54,7 +62,12 @@ impl StreamedCat {
     pub fn layers(&self) -> CatLayer<StreamLayer> {
         CatLayer::<StreamLayer>::new(
             self.asset_id,
-            StreamLayer::new(self.recipient, self.end_time, self.last_payment_time),
+            StreamLayer::new(
+                self.recipient,
+                self.clawback_ph,
+                self.end_time,
+                self.last_payment_time,
+            ),
         )
     }
 
@@ -73,6 +86,7 @@ impl StreamedCat {
         &self,
         ctx: &mut SpendContext,
         payment_time: u64,
+        clawback: bool,
     ) -> Result<NodePtr, DriverError> {
         self.layers().construct_solution(
             ctx,
@@ -81,6 +95,7 @@ impl StreamedCat {
                     my_amount: self.coin.amount,
                     payment_time,
                     to_pay: self.amount_to_be_paid(payment_time),
+                    clawback,
                 },
                 lineage_proof: Some(self.proof),
                 prev_coin_id: self.coin.coin_id(),
@@ -96,9 +111,14 @@ impl StreamedCat {
         )
     }
 
-    pub fn spend(&self, ctx: &mut SpendContext, payment_time: u64) -> Result<(), DriverError> {
+    pub fn spend(
+        &self,
+        ctx: &mut SpendContext,
+        payment_time: u64,
+        clawback: bool,
+    ) -> Result<(), DriverError> {
         let puzzle = self.construct_puzzle(ctx)?;
-        let solution = self.construct_solution(ctx, payment_time)?;
+        let solution = self.construct_solution(ctx, payment_time, clawback)?;
 
         ctx.spend(self.coin, Spend::new(puzzle, solution))
     }
@@ -131,25 +151,47 @@ impl StreamedCat {
                 };
 
                 let memos = Vec::<Bytes>::from_clvm(allocator, memos.value)?;
-                if memos.len() < 3 || memos.len() > 4 {
+                if memos.len() < 4 || memos.len() > 5 {
                     continue;
                 }
 
-                let (recipient, last_payment_time, end_time): (Bytes32, u64, u64) =
-                    if memos.len() == 3 {
-                        let Ok(b64): Result<Bytes32, _> = memos[0].clone().try_into() else {
-                            continue;
-                        };
-                        (b64, u64_from_bytes(&memos[1]), u64_from_bytes(&memos[2]))
-                    } else {
-                        let Ok(b64): Result<Bytes32, _> = memos[1].clone().try_into() else {
-                            continue;
-                        };
-                        (b64, u64_from_bytes(&memos[2]), u64_from_bytes(&memos[3]))
+                let (recipient, clawback_ph, last_payment_time, end_time): (
+                    Bytes32,
+                    Bytes32,
+                    u64,
+                    u64,
+                ) = if memos.len() == 4 {
+                    let Ok(recipient_b64): Result<Bytes32, _> = memos[0].clone().try_into() else {
+                        continue;
                     };
+                    let Ok(clawback_ph_b64): Result<Bytes32, _> = memos[1].clone().try_into()
+                    else {
+                        continue;
+                    };
+                    (
+                        recipient_b64,
+                        clawback_ph_b64,
+                        u64_from_bytes(&memos[1]),
+                        u64_from_bytes(&memos[2]),
+                    )
+                } else {
+                    let Ok(recipient_b64): Result<Bytes32, _> = memos[1].clone().try_into() else {
+                        continue;
+                    };
+                    let Ok(clawback_ph_b64): Result<Bytes32, _> = memos[2].clone().try_into()
+                    else {
+                        continue;
+                    };
+                    (
+                        recipient_b64,
+                        clawback_ph_b64,
+                        u64_from_bytes(&memos[2]),
+                        u64_from_bytes(&memos[3]),
+                    )
+                };
 
                 let candidate_inner_layer =
-                    StreamLayer::new(recipient, end_time, last_payment_time);
+                    StreamLayer::new(recipient, clawback_ph, end_time, last_payment_time);
                 let candidate_inner_puzzle_hash = candidate_inner_layer.puzzle_hash();
                 let candidate_puzzle_hash =
                     CatArgs::curry_tree_hash(parent_layer.asset_id, candidate_inner_puzzle_hash);
@@ -172,6 +214,7 @@ impl StreamedCat {
                         parent_amount: parent_coin.amount,
                     },
                     recipient,
+                    clawback_ph,
                     end_time,
                     last_payment_time,
                 ));
@@ -193,6 +236,7 @@ impl StreamedCat {
 
         let new_inner_layer = StreamLayer::new(
             layers.inner_puzzle.recipient,
+            layers.inner_puzzle.clawback_ph,
             layers.inner_puzzle.end_time,
             parent_solution.inner_puzzle_solution.payment_time,
         );
@@ -204,6 +248,7 @@ impl StreamedCat {
             layers.asset_id,
             proof,
             layers.inner_puzzle.recipient,
+            layers.inner_puzzle.clawback_ph,
             layers.inner_puzzle.end_time,
             // last payment time should've been updated by the spend
             parent_solution.inner_puzzle_solution.payment_time,
@@ -217,12 +262,18 @@ impl StreamedCat {
         s.finalize().into()
     }
 
-    pub fn get_launch_hints(recipient: Bytes32, start_time: u64, end_time: u64) -> Vec<Bytes> {
+    pub fn get_launch_hints(
+        recipient: Bytes32,
+        clawback_ph: Bytes32,
+        start_time: u64,
+        end_time: u64,
+    ) -> Vec<Bytes> {
         let hint: Bytes = recipient.into();
+        let clawback_ph: Bytes = clawback_ph.into();
         let second_memo = u64_to_bytes(start_time);
         let third_memo = u64_to_bytes(end_time);
 
-        vec![hint, second_memo.into(), third_memo.into()]
+        vec![hint, clawback_ph, second_memo.into(), third_memo.into()]
     }
 }
 
@@ -267,8 +318,14 @@ mod tests {
             sim.new_p2(payment_cat_amount)?;
         let minter_p2 = StandardLayer::new(minter_pk);
 
-        let streaming_inner_puzzle =
-            StreamLayer::new(user_puzzle_hash, total_claim_time + 1000, 1000);
+        let clawback_puzzle_ptr = ctx.alloc(&1)?;
+        let clawback_ph = tree_hash(&ctx.allocator, clawback_puzzle_ptr);
+        let streaming_inner_puzzle = StreamLayer::new(
+            user_puzzle_hash,
+            clawback_ph.into(),
+            total_claim_time + 1000,
+            1000,
+        );
         let streaming_inner_puzzle_hash: Bytes32 = streaming_inner_puzzle.puzzle_hash().into();
         let (issue_cat, eve_cat) = Cat::single_issuance_eve(
             ctx,
@@ -289,6 +346,7 @@ mod tests {
             initial_vesting_cat.asset_id,
             initial_vesting_cat.lineage_proof.unwrap(),
             user_puzzle_hash,
+            clawback_ph.into(),
             total_claim_time + 1000,
             1000,
         );
@@ -310,7 +368,7 @@ mod tests {
                 Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]),
             )?;
 
-            streamed_cat.spend(ctx, claim_time)?;
+            streamed_cat.spend(ctx, claim_time, false)?;
 
             let spends = ctx.take();
             let streamed_cat_spend = spends.last().unwrap().clone();
