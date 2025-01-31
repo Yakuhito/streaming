@@ -91,7 +91,7 @@ enum CliError {
     #[error("Home directory not found")]
     HomeDirectoryNotFound,
     #[error("Sage client error")]
-    SageCleint(#[from] client::ClientError),
+    SageClient(#[from] client::ClientError),
     #[error("Invalid amount: The amount is in XCH/CAT units, not mojos. Please include a '.' in the amount to indicate that you understand.")]
     InvalidAmount,
     #[error("Invalid address")]
@@ -224,7 +224,7 @@ async fn sync_stream(
             .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
         let parent_puzzle = Puzzle::parse(&ctx.allocator, parent_puzzle);
 
-        let (new_stream, clawbacked) = StreamedCat::from_parent_spend(
+        let (new_stream, clawbacked, paid_amount_if_clawback) = StreamedCat::from_parent_spend(
             &mut ctx.allocator,
             coin_record.coin,
             parent_puzzle,
@@ -233,7 +233,10 @@ async fn sync_stream(
         let Some(new_stream) = new_stream else {
             if clawbacked {
                 if print {
-                    println!("  Streamed CAT was clawed back.");
+                    println!(
+                        "  Streamed CAT was clawed back; last payment was {}.",
+                        paid_amount_if_clawback
+                    );
                 }
             } else {
                 println!("Failed to parse streamed CAT");

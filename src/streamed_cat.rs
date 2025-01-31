@@ -123,12 +123,13 @@ impl StreamedCat {
         ctx.spend(self.coin, Spend::new(puzzle, solution))
     }
 
+    // if clawback, 3rd arg = las
     pub fn from_parent_spend(
         allocator: &mut Allocator,
         parent_coin: Coin,
         parent_puzzle: Puzzle,
         parent_solution: NodePtr,
-    ) -> Result<(Option<Self>, bool), DriverError> {
+    ) -> Result<(Option<Self>, bool, u64), DriverError> {
         let Some(layers) = CatLayer::<StreamLayer>::parse_puzzle(allocator, parent_puzzle)? else {
             // check if parent created streaming CAT
             let parent_puzzle_ptr = parent_puzzle.ptr();
@@ -137,7 +138,7 @@ impl StreamedCat {
 
             let Some(parent_layer) = CatLayer::<NodePtr>::parse_puzzle(allocator, parent_puzzle)?
             else {
-                return Ok((None, false));
+                return Ok((None, false, 0));
             };
 
             let mut found_stream_layer: Option<Self> = None;
@@ -220,7 +221,7 @@ impl StreamedCat {
                 ));
             }
 
-            return Ok((found_stream_layer, false));
+            return Ok((found_stream_layer, false, 0));
         };
 
         let proof = LineageProof {
@@ -232,7 +233,7 @@ impl StreamedCat {
         let parent_solution =
             CatSolution::<StreamPuzzleSolution>::from_clvm(allocator, parent_solution)?;
         if parent_solution.inner_puzzle_solution.clawback {
-            return Ok((None, true));
+            return Ok((None, true, parent_solution.inner_puzzle_solution.to_pay));
         }
 
         let new_amount = parent_coin.amount - parent_solution.inner_puzzle_solution.to_pay;
@@ -258,6 +259,7 @@ impl StreamedCat {
                 parent_solution.inner_puzzle_solution.payment_time,
             )),
             false,
+            0,
         ))
     }
 
@@ -390,7 +392,7 @@ mod tests {
                 .to_clvm(&mut ctx.allocator)?;
             let parent_puzzle = Puzzle::from_clvm(&ctx.allocator, parent_puzzle)?;
             let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
-            let (Some(new_streamed_cat), clawback) = StreamedCat::from_parent_spend(
+            let (Some(new_streamed_cat), clawback, _) = StreamedCat::from_parent_spend(
                 &mut ctx.allocator,
                 streamed_cat.coin,
                 parent_puzzle,
@@ -426,12 +428,13 @@ mod tests {
             .to_clvm(&mut ctx.allocator)?;
         let parent_puzzle = Puzzle::from_clvm(&ctx.allocator, parent_puzzle)?;
         let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
-        let (new_streamed_cat_maybe, clawback) = StreamedCat::from_parent_spend(
-            &mut ctx.allocator,
-            streamed_cat.coin,
-            parent_puzzle,
-            parent_solution,
-        )?;
+        let (new_streamed_cat_maybe, clawback, _paid_amount_if_clawback) =
+            StreamedCat::from_parent_spend(
+                &mut ctx.allocator,
+                streamed_cat.coin,
+                parent_puzzle,
+                parent_solution,
+            )?;
 
         assert!(clawback);
         assert!(new_streamed_cat_maybe.is_none());
