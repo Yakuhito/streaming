@@ -360,14 +360,18 @@ async fn main() -> Result<(), CliError> {
                     .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
                 let parent_puzzle = Puzzle::parse(&ctx.allocator, parent_puzzle);
 
-                let Some(new_stream) = StreamedCat::from_parent_spend(
+                let (new_stream, clawbacked) = StreamedCat::from_parent_spend(
                     &mut ctx.allocator,
                     coin_record.coin,
                     parent_puzzle,
                     parent_solution,
-                )?
-                else {
-                    println!("Failed to parse streamed CAT");
+                )?;
+                let Some(new_stream) = new_stream else {
+                    if clawbacked {
+                        println!("Streamed CAT was clawed back.");
+                    } else {
+                        println!("Failed to parse streamed CAT");
+                    }
                     break;
                 };
 
@@ -529,14 +533,18 @@ async fn main() -> Result<(), CliError> {
                 .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
             let puzzle = Puzzle::parse(&ctx.allocator, puzzle);
 
-            let Some(mut latest_streamed_coin) = StreamedCat::from_parent_spend(
+            let (latest_streamed_coin, clawback) = StreamedCat::from_parent_spend(
                 &mut ctx.allocator,
                 coin_record.coin,
                 puzzle,
                 solution,
-            )?
-            else {
-                println!("Failed to parse streamed CAT");
+            )?;
+            let Some(mut latest_streamed_coin) = latest_streamed_coin else {
+                if clawback {
+                    println!("Streamed CAT was clawed back");
+                } else {
+                    println!("Failed to parse streamed CAT");
+                }
                 return Err(CliError::InvalidStreamId());
             };
 
@@ -586,7 +594,7 @@ async fn main() -> Result<(), CliError> {
                         .to_clvm(&mut ctx.allocator)
                         .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
                     let puzzle = Puzzle::parse(&ctx.allocator, puzzle);
-                    let Some(streamed_coin) = StreamedCat::from_parent_spend(
+                    let (Some(streamed_coin), _) = StreamedCat::from_parent_spend(
                         &mut ctx.allocator,
                         coin_record.coin,
                         puzzle,

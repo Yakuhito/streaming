@@ -128,7 +128,7 @@ impl StreamedCat {
         parent_coin: Coin,
         parent_puzzle: Puzzle,
         parent_solution: NodePtr,
-    ) -> Result<Option<Self>, DriverError> {
+    ) -> Result<(Option<Self>, bool), DriverError> {
         let Some(layers) = CatLayer::<StreamLayer>::parse_puzzle(allocator, parent_puzzle)? else {
             // check if parent created streaming CAT
             let parent_puzzle_ptr = parent_puzzle.ptr();
@@ -137,7 +137,7 @@ impl StreamedCat {
 
             let Some(parent_layer) = CatLayer::<NodePtr>::parse_puzzle(allocator, parent_puzzle)?
             else {
-                return Ok(None);
+                return Ok((None, false));
             };
 
             let mut found_stream_layer: Option<Self> = None;
@@ -220,7 +220,7 @@ impl StreamedCat {
                 ));
             }
 
-            return Ok(found_stream_layer);
+            return Ok((found_stream_layer, false));
         };
 
         let proof = LineageProof {
@@ -231,6 +231,9 @@ impl StreamedCat {
 
         let parent_solution =
             CatSolution::<StreamPuzzleSolution>::from_clvm(allocator, parent_solution)?;
+        if parent_solution.inner_puzzle_solution.clawback {
+            return Ok((None, true));
+        }
 
         let new_amount = parent_coin.amount - parent_solution.inner_puzzle_solution.to_pay;
 
@@ -243,16 +246,19 @@ impl StreamedCat {
         let new_puzzle_hash =
             CatArgs::curry_tree_hash(layers.asset_id, new_inner_layer.puzzle_hash());
 
-        Ok(Some(Self::new(
-            Coin::new(parent_coin.coin_id(), new_puzzle_hash.into(), new_amount),
-            layers.asset_id,
-            proof,
-            layers.inner_puzzle.recipient,
-            layers.inner_puzzle.clawback_ph,
-            layers.inner_puzzle.end_time,
-            // last payment time should've been updated by the spend
-            parent_solution.inner_puzzle_solution.payment_time,
-        )))
+        Ok((
+            Some(Self::new(
+                Coin::new(parent_coin.coin_id(), new_puzzle_hash.into(), new_amount),
+                layers.asset_id,
+                proof,
+                layers.inner_puzzle.recipient,
+                layers.inner_puzzle.clawback_ph,
+                layers.inner_puzzle.end_time,
+                // last payment time should've been updated by the spend
+                parent_solution.inner_puzzle_solution.payment_time,
+            )),
+            false,
+        ))
     }
 
     pub fn get_hint(recipient: Bytes32) -> Bytes32 {
@@ -284,9 +290,9 @@ mod tests {
     };
     use chia_protocol::Bytes;
     use chia_wallet_sdk::{test_secret_key, Cat, Conditions, Simulator, StandardLayer};
-    use clvm_traits::ToClvm;
+    use clvm_traits::{clvm_quote, ToClvm};
     use clvm_utils::tree_hash;
-    use clvmr::serde::node_from_bytes;
+    use clvmr::serde::{node_from_bytes, node_to_bytes};
 
     use crate::{STREAM_PUZZLE, STREAM_PUZZLE_HASH};
 
@@ -306,7 +312,8 @@ mod tests {
         let mut sim = Simulator::new();
 
         let claim_intervals = [1000, 2000, 500, 1000, 10];
-        let total_claim_time = claim_intervals.iter().sum::<u64>();
+        let clawback_offset = 1234;
+        let total_claim_time = claim_intervals.iter().sum::<u64>() + clawback_offset;
 
         // Create CAT & launch vesting one
         let user_sk = test_secret_key()?;
@@ -372,7 +379,6 @@ mod tests {
 
             let spends = ctx.take();
             let streamed_cat_spend = spends.last().unwrap().clone();
-
             sim.spend_coins(spends, &[user_sk.clone()])?;
 
             // set up for next iteration
@@ -384,14 +390,51 @@ mod tests {
                 .to_clvm(&mut ctx.allocator)?;
             let parent_puzzle = Puzzle::from_clvm(&ctx.allocator, parent_puzzle)?;
             let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
-            streamed_cat = StreamedCat::from_parent_spend(
+            let (Some(new_streamed_cat), clawback) = StreamedCat::from_parent_spend(
                 &mut ctx.allocator,
                 streamed_cat.coin,
                 parent_puzzle,
                 parent_solution,
             )?
-            .unwrap();
+            else {
+                panic!("Failed to parse new streamed cat");
+            };
+
+            assert!(!clawback);
+            streamed_cat = new_streamed_cat;
         }
+
+        // Test clawback
+        assert!(streamed_cat.coin.amount > 0);
+        let clawback_msg_coin = sim.new_coin(clawback_ph.into(), 0);
+        let claim_time = sim.next_timestamp() + 1;
+        let message_to_send: Bytes = Bytes::new(u64_to_bytes(claim_time));
+        let coin_id_ptr = streamed_cat.coin.coin_id().to_clvm(&mut ctx.allocator)?;
+        let solution = Conditions::new()
+            .send_message(23, message_to_send, vec![coin_id_ptr])
+            .to_clvm(&mut ctx.allocator)?;
+        ctx.spend(clawback_msg_coin, Spend::new(clawback_puzzle_ptr, solution))?;
+
+        streamed_cat.spend(ctx, claim_time, true)?;
+
+        let spends = ctx.take();
+        let streamed_cat_spend = spends.last().unwrap().clone();
+        sim.spend_coins(spends, &[user_sk.clone()])?;
+
+        let parent_puzzle = streamed_cat_spend
+            .puzzle_reveal
+            .to_clvm(&mut ctx.allocator)?;
+        let parent_puzzle = Puzzle::from_clvm(&ctx.allocator, parent_puzzle)?;
+        let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
+        let (new_streamed_cat_maybe, clawback) = StreamedCat::from_parent_spend(
+            &mut ctx.allocator,
+            streamed_cat.coin,
+            parent_puzzle,
+            parent_solution,
+        )?;
+
+        assert!(clawback);
+        assert!(new_streamed_cat_maybe.is_none());
 
         Ok(())
     }
