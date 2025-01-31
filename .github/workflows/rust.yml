@@ -29,7 +29,6 @@ jobs:
       - name: Install thing
       - run: apt update && apt-get install -y libgtk-3-dev
 
-
       - name: Instal cargo-workspaces
         run: cargo binstall cargo-workspaces --locked -y
 
