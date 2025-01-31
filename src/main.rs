@@ -234,8 +234,8 @@ async fn sync_stream(
             if clawbacked {
                 if print {
                     println!(
-                        "  Streamed CAT was clawed back; last payment was {}.",
-                        paid_amount_if_clawback
+                        "  Streamed CAT was clawed back; last payment was {:.3} CATs.",
+                        paid_amount_if_clawback as f64 / 1000.0
                     );
                 }
             } else {
@@ -629,9 +629,10 @@ async fn main() -> Result<(), CliError> {
             let response = client.send_cat(send_cat_request).await?;
 
             let mut streaming_coin_id: Option<String> = None;
+            let actual_asset_id = asset_id;
             for coin in response.summary.inputs {
                 if let AssetKind::Cat { asset_id, .. } = coin.kind {
-                    if asset_id.replace("0x", "") != hex::encode(asset_id) {
+                    if asset_id.replace("0x", "") != hex::encode(actual_asset_id) {
                         continue;
                     }
                 } else {
@@ -802,8 +803,8 @@ async fn main() -> Result<(), CliError> {
             let latest_timestamp = get_latest_timestamp(&cli).await?;
 
             println!("Latest block timestamp: {}", latest_timestamp);
-            let claim_time = if latest_timestamp + 300 <= latest_streamed_coin.end_time {
-                latest_timestamp + 300
+            let claim_time = if latest_timestamp + 600 <= latest_streamed_coin.end_time {
+                latest_timestamp + 600
             } else {
                 latest_streamed_coin.end_time
             };
