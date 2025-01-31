@@ -67,6 +67,21 @@ enum Commands {
         #[arg(long, default_value = "10000")]
         max_derivations: u64,
     },
+
+    #[command(arg_required_else_help = true)]
+    Clawback {
+        stream_id: String,
+        #[arg(long, default_value = "~/.local/share/com.rigidnetwork.sage/ssl")]
+        cert_path: String,
+        #[arg(long, default_value = "0.0001")]
+        fee: String,
+        #[arg(long, default_value_t = false)]
+        mainnet: bool,
+        #[arg(long, default_value_t = false)]
+        hardened: bool,
+        #[arg(long, default_value = "10000")]
+        max_derivations: u64,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -138,6 +153,7 @@ async fn sync_stream(
     stream_prefix: &str,
     prefix: &str,
     print: bool,
+    print_claimable: bool,
 ) -> Result<Option<StreamedCat>, CliError> {
     println!("Viewing stream with id {stream_id}");
 
@@ -284,12 +300,11 @@ async fn sync_stream(
                     .format("%Y-%m-%d %H:%M:%S")
             );
 
-            let time_now = Local::now().timestamp() as u64;
-            let claimable = latest_stream.coin.amount
-                * (time_now - latest_stream.last_payment_time)
-                / (latest_stream.end_time - latest_stream.last_payment_time);
-
-            println!("Claimable right now: {:.3} CATs", claimable as f64 / 1000.0);
+            if print_claimable {
+                let time_now = get_latest_timestamp(cli).await?;
+                let claimable = latest_stream.amount_to_be_paid(time_now);
+                println!("Claimable right now: {:.3} CATs", claimable as f64 / 1000.0);
+            }
 
             return Ok(Some(latest_stream));
         }
@@ -322,6 +337,67 @@ async fn wait_for_coin(
     }
 
     Ok(())
+}
+
+async fn get_latest_timestamp(cli: &CoinsetClient) -> Result<u64, CliError> {
+    let state_resp = cli
+        .get_blockchain_state()
+        .await
+        .map_err(CliError::Reqwest)?;
+    let Some(state) = state_resp.blockchain_state else {
+        println!("Failed to get blockchain state");
+        return Err(CliError::InvalidStreamId());
+    };
+
+    let mut block_record = state.peak;
+    while block_record.timestamp.is_none() {
+        let block_resp = cli
+            .get_block_record_by_height(block_record.height - 1)
+            .await
+            .map_err(CliError::Reqwest)?;
+        let Some(new_block_record) = block_resp.block_record else {
+            println!("Failed to get block record");
+            return Err(CliError::InvalidStreamId());
+        };
+
+        block_record = new_block_record;
+    }
+
+    Ok(block_record.timestamp.unwrap())
+}
+
+async fn get_public_key(
+    cli: &SageClient,
+    address: &str,
+    max_derivations: u64,
+    hardened: bool,
+) -> Result<PublicKey, CliError> {
+    let mut public_key: Option<PublicKey> = None;
+    for i in (0..max_derivations).step_by(1000) {
+        let derivation_resp = cli
+            .get_derivations(GetDerivations {
+                offset: i as u32,
+                limit: 1000,
+                hardened,
+            })
+            .await?;
+
+        for derivation in derivation_resp.derivations {
+            if derivation.address == address {
+                let pubkey_bytes = hex::decode(derivation.public_key).unwrap();
+                let pubkey_bytes: [u8; 48] = pubkey_bytes.try_into().unwrap();
+                public_key = Some(PublicKey::from_bytes(&pubkey_bytes).unwrap());
+                break;
+            }
+        }
+    }
+
+    let Some(public_key) = public_key else {
+        println!("Failed to find public key");
+        return Err(CliError::InvalidStreamId());
+    };
+
+    Ok(public_key)
 }
 
 #[tokio::main]
@@ -474,7 +550,7 @@ async fn main() -> Result<(), CliError> {
             };
             let stream_prefix = if mainnet { "s" } else { "ts" };
             let prefix = if mainnet { "xch" } else { "txch" };
-            let _ = sync_stream(stream_id, &cli, stream_prefix, prefix, true).await?;
+            let _ = sync_stream(stream_id, &cli, stream_prefix, prefix, true, true).await?;
         }
         Commands::Claim {
             stream_id,
@@ -501,41 +577,16 @@ async fn main() -> Result<(), CliError> {
                 if mainnet { "s" } else { "ts" },
                 if mainnet { "xch" } else { "txch" },
                 true,
+                false,
             )
             .await?
             .unwrap();
 
-            let state_resp = cli
-                .get_blockchain_state()
-                .await
-                .map_err(CliError::Reqwest)?;
-            let Some(state) = state_resp.blockchain_state else {
-                println!("Failed to get blockchain state");
-                return Err(CliError::InvalidStreamId());
-            };
+            let latest_timestamp = get_latest_timestamp(&cli).await?;
 
-            let mut block_record = state.peak;
-            while block_record.timestamp.is_none() {
-                let block_resp = cli
-                    .get_block_record_by_height(block_record.height - 1)
-                    .await
-                    .map_err(CliError::Reqwest)?;
-                let Some(new_block_record) = block_resp.block_record else {
-                    println!("Failed to get block record");
-                    return Err(CliError::InvalidStreamId());
-                };
-
-                block_record = new_block_record;
-            }
-
-            println!(
-                "Latest block timestamp: {}",
-                block_record.timestamp.unwrap()
-            );
-            let claim_time = block_record.timestamp.unwrap() - 1;
-            let claim_amount = latest_streamed_coin.coin.amount
-                * (claim_time - latest_streamed_coin.last_payment_time)
-                / (latest_streamed_coin.end_time - latest_streamed_coin.last_payment_time);
+            println!("Latest block timestamp: {}", latest_timestamp);
+            let claim_time = latest_timestamp - 1;
+            let claim_amount = latest_streamed_coin.amount_to_be_paid(claim_time);
 
             println!("Claim amount: {:.3} CATs", claim_amount as f64 / 1000.0);
             println!("Press 'Enter' to proceed");
@@ -563,33 +614,9 @@ async fn main() -> Result<(), CliError> {
                         eprintln!("Failed to create Sage client: {}", e);
                         CliError::HomeDirectoryNotFound
                     })?;
+            let public_key =
+                get_public_key(&sage_client, &recipient_address, max_derivations, hardened).await?;
 
-            let mut public_key: Option<PublicKey> = None;
-            for i in (0..max_derivations).step_by(1000) {
-                let derivation_resp = sage_client
-                    .get_derivations(GetDerivations {
-                        offset: i as u32,
-                        limit: 1000,
-                        hardened,
-                    })
-                    .await?;
-
-                for derivation in derivation_resp.derivations {
-                    if derivation.address == recipient_address {
-                        let pubkey_bytes = hex::decode(derivation.public_key).unwrap();
-                        let pubkey_bytes: [u8; 48] = pubkey_bytes.try_into().unwrap();
-                        public_key = Some(PublicKey::from_bytes(&pubkey_bytes).unwrap());
-                        break;
-                    }
-                }
-            }
-
-            let Some(public_key) = public_key else {
-                println!("Failed to find public key");
-                return Err(CliError::InvalidStreamId());
-            };
-
-            println!("Public key: {:?}", public_key);
             println!("Building spend bundle...");
 
             let p2 = StandardLayer::new(public_key);
