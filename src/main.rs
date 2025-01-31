@@ -134,7 +134,7 @@ fn parse_amount(amount: String, is_cat: bool) -> Result<u64, CliError> {
 
 async fn sync_stream(
     stream_id: String,
-    cli: CoinsetClient,
+    cli: &CoinsetClient,
     stream_prefix: &str,
     prefix: &str,
     print: bool,
@@ -298,6 +298,32 @@ async fn sync_stream(
     Ok(latest_stream)
 }
 
+async fn wait_for_coin(
+    coin_id: Bytes32,
+    cli: &CoinsetClient,
+    also_check_for_spent: bool,
+) -> Result<(), CliError> {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+        let coin_resp = cli.get_coin_record_by_name(coin_id).await?;
+
+        if coin_resp.success && coin_resp.coin_record.is_some() {
+            if also_check_for_spent {
+                if let Some(coin_record) = coin_resp.coin_record {
+                    if coin_record.spent {
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), CliError> {
     let args = Cli::parse();
@@ -437,19 +463,7 @@ async fn main() -> Result<(), CliError> {
                 CoinsetClient::testnet11()
             };
 
-            loop {
-                let resp = cli
-                    .get_coin_record_by_name(streaming_coin_id.into())
-                    .await
-                    .map_err(CliError::Reqwest)?;
-
-                if resp.success && resp.coin_record.is_some() {
-                    break;
-                }
-
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            }
-
+            wait_for_coin(streaming_coin_id.into(), &cli, false).await?;
             println!("Confimed! :)");
         }
         Commands::View { stream_id, mainnet } => {
@@ -460,7 +474,7 @@ async fn main() -> Result<(), CliError> {
             };
             let stream_prefix = if mainnet { "s" } else { "ts" };
             let prefix = if mainnet { "xch" } else { "txch" };
-            let _ = sync_stream(stream_id, cli, stream_prefix, prefix, true).await?;
+            let _ = sync_stream(stream_id, &cli, stream_prefix, prefix, true).await?;
         }
         Commands::Claim {
             stream_id,
@@ -472,13 +486,6 @@ async fn main() -> Result<(), CliError> {
         } => {
             let cert_path = expand_tilde(cert_path)?;
 
-            let (stream_coin_id, prefix) =
-                decode_address(&stream_id).map_err(|_| CliError::InvalidStreamId())?;
-            if prefix != "s" {
-                return Err(CliError::InvalidStreamId());
-            }
-            let stream_coin_id = Bytes32::from(stream_coin_id);
-
             let cli = if mainnet {
                 CoinsetClient::mainnet()
             } else {
@@ -486,160 +493,17 @@ async fn main() -> Result<(), CliError> {
             };
 
             println!("Fetching latest unspent coin...");
-            let eve_coin_record_resp = cli
-                .get_coin_record_by_name(stream_coin_id)
-                .await
-                .map_err(CliError::Reqwest)?;
-
-            if !eve_coin_record_resp.success {
-                println!("Failed to get eve streaming coin record :(");
-                return Err(CliError::InvalidStreamId());
-            }
-
-            let Some(eve_coin_record) = eve_coin_record_resp.coin_record else {
-                println!("Eve coin record ot available");
-                return Err(CliError::InvalidStreamId());
-            };
 
             let mut ctx = SpendContext::new();
-            let coin_record = if eve_coin_record.spent {
-                eve_coin_record
-            } else {
-                let launcher_coin_record_resp = cli
-                    .get_coin_record_by_name(eve_coin_record.coin.parent_coin_info)
-                    .await
-                    .map_err(CliError::Reqwest)?;
-
-                if !launcher_coin_record_resp.success {
-                    println!("Failed to get launcher coin record :(");
-                    return Err(CliError::InvalidStreamId());
-                }
-
-                let Some(launcher_coin_record) = launcher_coin_record_resp.coin_record else {
-                    println!("Launcher coin record ot available");
-                    return Err(CliError::InvalidStreamId());
-                };
-
-                launcher_coin_record
-            };
-
-            let puzzle_and_solution = cli
-                .get_puzzle_and_solution(
-                    coin_record.coin.coin_id(),
-                    Some(coin_record.spent_block_index),
-                )
-                .await
-                .map_err(CliError::Reqwest)?;
-
-            let Some(coin_solution) = puzzle_and_solution.coin_solution else {
-                println!("Failed to get launcher solution");
-                return Err(CliError::InvalidStreamId());
-            };
-
-            let puzzle = coin_solution
-                .puzzle_reveal
-                .to_clvm(&mut ctx.allocator)
-                .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-            let solution = coin_solution
-                .solution
-                .to_clvm(&mut ctx.allocator)
-                .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-            let puzzle = Puzzle::parse(&ctx.allocator, puzzle);
-
-            let (latest_streamed_coin, clawback) = StreamedCat::from_parent_spend(
-                &mut ctx.allocator,
-                coin_record.coin,
-                puzzle,
-                solution,
-            )?;
-            let Some(mut latest_streamed_coin) = latest_streamed_coin else {
-                if clawback {
-                    println!("Streamed CAT was clawed back");
-                } else {
-                    println!("Failed to parse streamed CAT");
-                }
-                return Err(CliError::InvalidStreamId());
-            };
-
-            let hint = StreamedCat::get_hint(latest_streamed_coin.recipient);
-            let unspent = cli
-                .get_coin_records_by_hint(
-                    hint,
-                    Some(coin_record.spent_block_index - 1),
-                    None,
-                    Some(false),
-                )
-                .await
-                .map_err(CliError::Reqwest)?;
-
-            if let Some(unspent_coin_records) = unspent.coin_records {
-                for coin_record in unspent_coin_records {
-                    if coin_record.spent {
-                        continue;
-                    }
-
-                    let parent_coin_record = cli
-                        .get_coin_record_by_name(coin_record.coin.parent_coin_info)
-                        .await
-                        .map_err(CliError::Reqwest)?;
-                    let Some(coin_record) = parent_coin_record.coin_record else {
-                        continue;
-                    };
-
-                    let puzzle_and_solution = cli
-                        .get_puzzle_and_solution(
-                            coin_record.coin.coin_id(),
-                            Some(coin_record.spent_block_index),
-                        )
-                        .await
-                        .map_err(CliError::Reqwest)?;
-
-                    let Some(coin_solution) = puzzle_and_solution.coin_solution else {
-                        continue;
-                    };
-
-                    let puzzle = coin_solution
-                        .puzzle_reveal
-                        .to_clvm(&mut ctx.allocator)
-                        .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-                    let solution = coin_solution
-                        .solution
-                        .to_clvm(&mut ctx.allocator)
-                        .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-                    let puzzle = Puzzle::parse(&ctx.allocator, puzzle);
-                    let (Some(streamed_coin), _) = StreamedCat::from_parent_spend(
-                        &mut ctx.allocator,
-                        coin_record.coin,
-                        puzzle,
-                        solution,
-                    )?
-                    else {
-                        continue;
-                    };
-
-                    if streamed_coin.asset_id == latest_streamed_coin.asset_id
-                        && streamed_coin.end_time == latest_streamed_coin.end_time
-                        && streamed_coin.recipient == latest_streamed_coin.recipient
-                        && streamed_coin.last_payment_time > latest_streamed_coin.last_payment_time
-                    {
-                        latest_streamed_coin = streamed_coin;
-                    }
-                }
-            }
-
-            println!(
-                "Latest streamed coin id: 0x{}",
-                hex::encode(latest_streamed_coin.coin.coin_id().to_vec())
-            );
-            println!(
-                "Last payment time: {} (local: {}); remaining amount: {:.3} CATs",
-                latest_streamed_coin.last_payment_time,
-                Local
-                    .timestamp_opt(latest_streamed_coin.last_payment_time as i64, 0)
-                    .unwrap()
-                    .format("%Y-%m-%d %H:%M:%S"),
-                latest_streamed_coin.coin.amount as f64 / 1000.0
-            );
+            let latest_streamed_coin = sync_stream(
+                stream_id,
+                &cli,
+                if mainnet { "s" } else { "ts" },
+                if mainnet { "xch" } else { "txch" },
+                true,
+            )
+            .await?
+            .unwrap();
 
             let state_resp = cli
                 .get_blockchain_state()
@@ -839,20 +703,7 @@ async fn main() -> Result<(), CliError> {
             let _ = sage_client.sign_coin_spends(sign_request).await;
 
             println!("Waiting for transaction to be confirmed...");
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-
-                let coin_resp = cli
-                    .get_coin_record_by_name(latest_streamed_coin.coin.coin_id())
-                    .await?;
-
-                if let Some(coin_record) = coin_resp.coin_record {
-                    if coin_record.spent {
-                        break;
-                    }
-                }
-            }
-
+            wait_for_coin(latest_streamed_coin.coin.coin_id(), &cli, true).await?;
             println!("Confirmed :)");
         }
     }
