@@ -521,7 +521,8 @@ async fn generate_spend_bundle(
         partial: false,
     };
 
-    let _ = sage_client.sign_coin_spends(sign_request).await;
+    let resp = sage_client.sign_coin_spends(sign_request).await?;
+    println!("Sign coin spends response from sage: {:?}", resp);
 
     Ok(latest_streamed_coin.coin.coin_id())
 }
