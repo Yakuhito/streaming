@@ -369,7 +369,7 @@ async fn main() -> Result<(), CliError> {
 
             println!("You're about to start streaming a CAT to {}", recipient);
             println!("Note: Sage RPC should be running on port 9257\n");
-            println!("Please note that the CAT CANNOT be clawed back. Please ensure the details below are correct.");
+            println!("Please note that the CAT can only be clawed back by the clawback address. Please ensure the details below are correct.");
             println!("Asset ID: {}", hex::encode(asset_id));
             println!("Amount: {:.3}", cat_amount as f64 / 1000.0);
             println!(
@@ -453,7 +453,7 @@ async fn main() -> Result<(), CliError> {
                 .map_err(|_| CliError::UnknownStreamingCoinId)?;
             println!(
                 "Stream id: {}",
-                encode_address(streaming_coin_id, if mainnet { "xch" } else { "txch" }).unwrap()
+                encode_address(streaming_coin_id, if mainnet { "s" } else { "ts" }).unwrap()
             );
 
             println!("Waiting for mempool item to be confirmed...");

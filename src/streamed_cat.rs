@@ -171,8 +171,8 @@ impl StreamedCat {
                     (
                         recipient_b64,
                         clawback_ph_b64,
-                        u64_from_bytes(&memos[1]),
                         u64_from_bytes(&memos[2]),
+                        u64_from_bytes(&memos[3]),
                     )
                 } else {
                     let Ok(recipient_b64): Result<Bytes32, _> = memos[1].clone().try_into() else {
@@ -185,8 +185,8 @@ impl StreamedCat {
                     (
                         recipient_b64,
                         clawback_ph_b64,
-                        u64_from_bytes(&memos[2]),
                         u64_from_bytes(&memos[3]),
+                        u64_from_bytes(&memos[4]),
                     )
                 };
 
