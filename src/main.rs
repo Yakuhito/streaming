@@ -663,7 +663,11 @@ async fn main() -> Result<(), CliError> {
                 .map_err(|_| CliError::UnknownStreamingCoinId)?;
             println!(
                 "Stream id: {}",
-                encode_address(streaming_coin_id, if mainnet { "s" } else { "ts" }).unwrap()
+                encode_address(
+                    streaming_coin_id,
+                    if mainnet { "stream" } else { "tstream" }
+                )
+                .unwrap()
             );
 
             println!("Waiting for mempool item to be confirmed...");
@@ -682,7 +686,7 @@ async fn main() -> Result<(), CliError> {
             } else {
                 CoinsetClient::testnet11()
             };
-            let stream_prefix = if mainnet { "s" } else { "ts" };
+            let stream_prefix = if mainnet { "stream" } else { "tstream" };
             let prefix = if mainnet { "xch" } else { "txch" };
             let _ = sync_stream(stream_id, &cli, stream_prefix, prefix, true, true).await?;
         }
@@ -707,7 +711,7 @@ async fn main() -> Result<(), CliError> {
             let latest_streamed_coin = sync_stream(
                 stream_id,
                 &cli,
-                if mainnet { "s" } else { "ts" },
+                if mainnet { "stream" } else { "tstream" },
                 if mainnet { "xch" } else { "txch" },
                 true,
                 false,
@@ -792,7 +796,7 @@ async fn main() -> Result<(), CliError> {
             let latest_streamed_coin = sync_stream(
                 stream_id,
                 &cli,
-                if mainnet { "s" } else { "ts" },
+                if mainnet { "stream" } else { "tstream" },
                 if mainnet { "xch" } else { "txch" },
                 true,
                 false,
