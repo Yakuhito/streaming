@@ -29,7 +29,7 @@ Make note of the stream id, which is the streamed CAT's unique identifier. It sh
 To view the streamed CAT status and history at any point, you can use the following command:
 
 ```bash
-cargo r --release status <STREAM_ID>
+cargo r --release view <STREAM_ID>
 ```
 
 To get the claimable CAT, the recipient can use the following command:

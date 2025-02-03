@@ -25,19 +25,27 @@
                 ; else
                 (list ASSERT_SECONDS_ABSOLUTE payment_time)
             )
-            (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
-            (list
-                CREATE_COIN
-                (i clawback
-                    CLAWBACK_PH
-                    ; else
-                    (curry_hashes_inline SELF_HASH
-                        (sha256 1 SELF_HASH)
-                        (sha256 1 payment_time)
+            (i (= to_pay ())
+                (list REMARK)
+                ; else
+                (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
+            )
+            (i (=  my_amount to_pay)
+                (list REMARK)
+                ; else
+                (list
+                    CREATE_COIN
+                    (i clawback
+                        CLAWBACK_PH
+                        ; else
+                        (curry_hashes_inline SELF_HASH
+                            (sha256 1 SELF_HASH)
+                            (sha256 1 payment_time)
+                        )
                     )
+                    (- my_amount to_pay)
+                    (list (sha256 's' RECIPIENT))
                 )
-                (- my_amount to_pay)
-                (list (sha256 's' RECIPIENT))
             )
             (list
                 RECEIVE_MESSAGE
