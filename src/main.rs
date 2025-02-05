@@ -256,7 +256,11 @@ async fn sync_stream(
             );
             println!(
                 "Clawback address: {}",
-                encode_address(new_stream.clawback_ph.into(), prefix).unwrap()
+                if let Some(clawback_ph) = new_stream.clawback_ph {
+                    encode_address(clawback_ph.into(), prefix).unwrap()
+                } else {
+                    "None".to_string()
+                }
             );
             println!(
                 "Start time: {} (local: {})",
@@ -569,7 +573,7 @@ async fn main() -> Result<(), CliError> {
             let asset_id: [u8; 32] = asset_id.try_into().map_err(|_| CliError::InvalidAssetId)?;
             let target_inner_puzzle_hash = StreamPuzzle2ndCurryArgs::curry_tree_hash(
                 Bytes32::new(recipient_puzzle_hash),
-                clawback_ph.into(),
+                Some(clawback_ph.into()),
                 end_timestamp,
                 start_timestamp,
             );
@@ -822,7 +826,10 @@ async fn main() -> Result<(), CliError> {
             println!("Press 'Enter' to proceed");
             let _ = std::io::stdin().read_line(&mut String::new());
 
-            let clawback_ph = latest_streamed_coin.clawback_ph;
+            let Some(clawback_ph) = latest_streamed_coin.clawback_ph else {
+                eprintln!("Stream cannot be clawed back :(");
+                return Err(CliError::InvalidStreamId());
+            };
             let clawback_address =
                 encode_address(clawback_ph.into(), if mainnet { "xch" } else { "txch" }).map_err(
                     |e| {

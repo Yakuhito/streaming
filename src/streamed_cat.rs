@@ -25,7 +25,7 @@ pub struct StreamedCat {
     pub inner_puzzle_hash: Bytes32,
 
     pub recipient: Bytes32,
-    pub clawback_ph: Bytes32,
+    pub clawback_ph: Option<Bytes32>,
     pub end_time: u64,
     pub last_payment_time: u64,
 }
@@ -36,7 +36,7 @@ impl StreamedCat {
         asset_id: Bytes32,
         proof: LineageProof,
         recipient: Bytes32,
-        clawback_ph: Bytes32,
+        clawback_ph: Option<Bytes32>,
         end_time: u64,
         last_payment_time: u64,
     ) -> Self {
@@ -158,16 +158,22 @@ impl StreamedCat {
 
                 let (recipient, clawback_ph, last_payment_time, end_time): (
                     Bytes32,
-                    Bytes32,
+                    Option<Bytes32>,
                     u64,
                     u64,
                 ) = if memos.len() == 4 {
                     let Ok(recipient_b64): Result<Bytes32, _> = memos[0].clone().try_into() else {
                         continue;
                     };
-                    let Ok(clawback_ph_b64): Result<Bytes32, _> = memos[1].clone().try_into()
-                    else {
-                        continue;
+                    let clawback_ph_b64: Option<Bytes32> = if memos[1].is_empty() {
+                        None
+                    } else {
+                        let b32: Result<Bytes32, _> = memos[1].clone().try_into();
+                        if let Ok(b32) = b32 {
+                            Some(b32)
+                        } else {
+                            continue;
+                        }
                     };
                     (
                         recipient_b64,
@@ -179,9 +185,15 @@ impl StreamedCat {
                     let Ok(recipient_b64): Result<Bytes32, _> = memos[1].clone().try_into() else {
                         continue;
                     };
-                    let Ok(clawback_ph_b64): Result<Bytes32, _> = memos[2].clone().try_into()
-                    else {
-                        continue;
+                    let clawback_ph_b64: Option<Bytes32> = if memos[2].is_empty() {
+                        None
+                    } else {
+                        let b32: Result<Bytes32, _> = memos[2].clone().try_into();
+                        if let Ok(b32) = b32 {
+                            Some(b32)
+                        } else {
+                            continue;
+                        }
                     };
                     (
                         recipient_b64,
@@ -331,7 +343,7 @@ mod tests {
         let clawback_ph = tree_hash(&ctx.allocator, clawback_puzzle_ptr);
         let streaming_inner_puzzle = StreamLayer::new(
             user_puzzle_hash,
-            clawback_ph.into(),
+            Some(clawback_ph.into()),
             total_claim_time + 1000,
             1000,
         );
@@ -355,7 +367,7 @@ mod tests {
             initial_vesting_cat.asset_id,
             initial_vesting_cat.lineage_proof.unwrap(),
             user_puzzle_hash,
-            clawback_ph.into(),
+            Some(clawback_ph.into()),
             total_claim_time + 1000,
             1000,
         );

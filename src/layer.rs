@@ -15,12 +15,12 @@ pub const STREAM_PUZZLE_HASH: TreeHash = TreeHash::new(hex!(
 #[clvm(curry)]
 pub struct StreamPuzzle1stCurryArgs {
     pub recipient: Bytes32,
-    pub clawback_ph: Bytes32,
+    pub clawback_ph: Option<Bytes32>,
     pub end_time: u64,
 }
 
 impl StreamPuzzle1stCurryArgs {
-    pub fn new(recipient: Bytes32, clawback_ph: Bytes32, end_time: u64) -> Self {
+    pub fn new(recipient: Bytes32, clawback_ph: Option<Bytes32>, end_time: u64) -> Self {
         Self {
             recipient,
             clawback_ph,
@@ -28,7 +28,11 @@ impl StreamPuzzle1stCurryArgs {
         }
     }
 
-    pub fn curry_tree_hash(recipient: Bytes32, clawback_ph: Bytes32, end_time: u64) -> TreeHash {
+    pub fn curry_tree_hash(
+        recipient: Bytes32,
+        clawback_ph: Option<Bytes32>,
+        end_time: u64,
+    ) -> TreeHash {
         CurriedProgram {
             program: STREAM_PUZZLE_HASH,
             args: StreamPuzzle1stCurryArgs::new(recipient, clawback_ph, end_time),
@@ -54,7 +58,7 @@ impl StreamPuzzle2ndCurryArgs {
 
     pub fn curry_tree_hash(
         recipient: Bytes32,
-        clawback_ph: Bytes32,
+        clawback_ph: Option<Bytes32>,
         end_time: u64,
         last_payment_time: u64,
     ) -> TreeHash {
@@ -85,7 +89,7 @@ impl Mod for StreamPuzzle1stCurryArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamLayer {
     pub recipient: Bytes32,
-    pub clawback_ph: Bytes32,
+    pub clawback_ph: Option<Bytes32>,
     pub end_time: u64,
     pub last_payment_time: u64,
 }
@@ -93,7 +97,7 @@ pub struct StreamLayer {
 impl StreamLayer {
     pub fn new(
         recipient: Bytes32,
-        clawback_ph: Bytes32,
+        clawback_ph: Option<Bytes32>,
         end_time: u64,
         last_payment_time: u64,
     ) -> Self {
