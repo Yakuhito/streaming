@@ -566,14 +566,19 @@ async fn main() -> Result<(), CliError> {
 
             let (recipient_puzzle_hash, _prefix) =
                 decode_address(&recipient).map_err(CliError::Address)?;
-            let (clawback_ph, _prefix) =
-                decode_address(&clawback_address).map_err(CliError::Address)?;
+            let clawback_ph: Option<Bytes32> = if clawback_address == "none" {
+                None
+            } else {
+                let (clawback_ph, _prefix) =
+                    decode_address(&clawback_address).map_err(CliError::Address)?;
+                Some(clawback_ph.into())
+            };
             let cat_amount = parse_amount(amount, true)?;
 
             let asset_id: [u8; 32] = asset_id.try_into().map_err(|_| CliError::InvalidAssetId)?;
             let target_inner_puzzle_hash = StreamPuzzle2ndCurryArgs::curry_tree_hash(
                 Bytes32::new(recipient_puzzle_hash),
-                Some(clawback_ph.into()),
+                clawback_ph,
                 end_timestamp,
                 start_timestamp,
             );
@@ -620,7 +625,7 @@ async fn main() -> Result<(), CliError> {
                 fee: Amount::Number(parse_amount(fee, false)?),
                 memos: StreamedCat::get_launch_hints(
                     Bytes32::new(recipient_puzzle_hash),
-                    clawback_ph.into(),
+                    clawback_ph,
                     start_timestamp,
                     end_timestamp,
                 )

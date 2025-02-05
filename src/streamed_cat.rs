@@ -284,12 +284,16 @@ impl StreamedCat {
 
     pub fn get_launch_hints(
         recipient: Bytes32,
-        clawback_ph: Bytes32,
+        clawback_ph: Option<Bytes32>,
         start_time: u64,
         end_time: u64,
     ) -> Vec<Bytes> {
         let hint: Bytes = recipient.into();
-        let clawback_ph: Bytes = clawback_ph.into();
+        let clawback_ph: Bytes = if let Some(clawback_ph) = clawback_ph {
+            clawback_ph.into()
+        } else {
+            Bytes::new(vec![])
+        };
         let second_memo = u64_to_bytes(start_time);
         let third_memo = u64_to_bytes(end_time);
 
