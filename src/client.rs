@@ -1,9 +1,9 @@
+use dirs::data_dir;
 use reqwest::Identity;
 use sage_api::{
     GetDerivations, GetDerivationsResponse, SendCat, SendCatResponse, SendXch, SignCoinSpends,
     SignCoinSpendsResponse,
 };
-use std::path::Path;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -22,9 +22,13 @@ pub struct SageClient {
 }
 
 impl SageClient {
-    pub fn new(cert_path: &Path, key_path: &Path, base_url: String) -> Result<Self, ClientError> {
-        let cert = std::fs::read(cert_path).map_err(|_| ClientError::CertificateError)?;
-        let key = std::fs::read(key_path).map_err(|_| ClientError::CertificateError)?;
+    pub fn new() -> Result<Self, ClientError> {
+        let data_dir = data_dir().ok_or(ClientError::CertificateError)?;
+
+        let cert_file = data_dir.join("com.rigidnetwork.sage/ssl/wallet.crt");
+        let key_file = data_dir.join("com.rigidnetwork.sage/ssl/wallet.key");
+        let cert = std::fs::read(cert_file).map_err(|_| ClientError::CertificateError)?;
+        let key = std::fs::read(key_file).map_err(|_| ClientError::CertificateError)?;
 
         let identity =
             Identity::from_pem(&[cert, key].concat()).map_err(|_| ClientError::CertificateError)?;
@@ -35,7 +39,10 @@ impl SageClient {
             .danger_accept_invalid_certs(true)
             .build()?;
 
-        Ok(Self { client, base_url })
+        Ok(Self {
+            client,
+            base_url: "https://localhost:9257".to_string(),
+        })
     }
 
     pub async fn send_cat(&self, request: SendCat) -> Result<SendCatResponse, ClientError> {
