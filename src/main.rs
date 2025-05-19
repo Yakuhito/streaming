@@ -533,22 +533,15 @@ async fn main() -> Result<(), CliError> {
             end_timestamp,
             recipient,
             clawback_address,
-            cert_path,
             fee,
-            mainnet,
+            testnet11,
         } => {
             let asset_id = hex::decode(asset_id).map_err(|_| CliError::InvalidAssetId)?;
-            let cert_path = expand_tilde(cert_path)?;
 
-            let cert_file = cert_path.join("wallet.crt");
-            let key_file = cert_path.join("wallet.key");
-
-            let client =
-                SageClient::new(&cert_file, &key_file, "https://localhost:9257".to_string())
-                    .map_err(|e| {
-                        eprintln!("Failed to create client: {}", e);
-                        CliError::HomeDirectoryNotFound
-                    })?;
+            let client = SageClient::new().map_err(|e| {
+                eprintln!("Failed to create client: {}", e);
+                CliError::HomeDirectoryNotFound
+            })?;
 
             let (recipient_puzzle_hash, _prefix) =
                 decode_address(&recipient).map_err(CliError::Address)?;
@@ -592,14 +585,14 @@ async fn main() -> Result<(), CliError> {
                 "Fee: {:.12}",
                 parse_amount(fee.clone(), false)? as f64 / 1_000_000_000_000.0
             );
-            println!("Mainnet?: {}", mainnet);
+            println!("Mainnet?: {}", !testnet11);
 
             println!("Press Enter to continue...");
             let _ = std::io::stdin().read_line(&mut String::new());
 
             let streaming_cat_address = encode_address(
                 target_inner_puzzle_hash.into(),
-                if mainnet { "xch" } else { "txch" },
+                if testnet11 { "txch" } else { "xch" },
             )
             .map_err(CliError::EncodeAddress)?;
 
@@ -609,15 +602,18 @@ async fn main() -> Result<(), CliError> {
                 address: streaming_cat_address.clone(),
                 amount: Amount::Number(cat_amount),
                 fee: Amount::Number(parse_amount(fee, false)?),
-                memos: StreamedCat::get_launch_hints(
-                    Bytes32::new(recipient_puzzle_hash),
-                    clawback_ph,
-                    start_timestamp,
-                    end_timestamp,
-                )
-                .iter()
-                .map(|b| hex::encode(b.to_vec()))
-                .collect(),
+                memos: Some(
+                    StreamedCat::get_launch_hints(
+                        Bytes32::new(recipient_puzzle_hash),
+                        clawback_ph,
+                        start_timestamp,
+                        end_timestamp,
+                    )
+                    .iter()
+                    .map(|b| hex::encode(b.to_vec()))
+                    .collect(),
+                ),
+                include_hint: false,
                 auto_submit: true,
             };
 
@@ -660,45 +656,45 @@ async fn main() -> Result<(), CliError> {
                 "Stream id: {}",
                 encode_address(
                     streaming_coin_id,
-                    if mainnet { "stream" } else { "tstream" }
+                    if testnet11 { "tstream" } else { "stream" }
                 )
                 .unwrap()
             );
 
             println!("Waiting for mempool item to be confirmed...");
-            let cli = if mainnet {
-                CoinsetClient::mainnet()
-            } else {
+            let cli = if testnet11 {
                 CoinsetClient::testnet11()
+            } else {
+                CoinsetClient::mainnet()
             };
 
             wait_for_coin(streaming_coin_id.into(), &cli, false).await?;
             println!("Confimed! :)");
         }
-        Commands::View { stream_id, mainnet } => {
-            let cli = if mainnet {
-                CoinsetClient::mainnet()
-            } else {
+        Commands::View {
+            stream_id,
+            testnet11,
+        } => {
+            let cli = if testnet11 {
                 CoinsetClient::testnet11()
+            } else {
+                CoinsetClient::mainnet()
             };
-            let stream_prefix = if mainnet { "stream" } else { "tstream" };
-            let prefix = if mainnet { "xch" } else { "txch" };
+            let stream_prefix = if testnet11 { "tstream" } else { "stream" };
+            let prefix = if testnet11 { "txch" } else { "xch" };
             let _ = sync_stream(stream_id, &cli, stream_prefix, prefix, true, true).await?;
         }
         Commands::Claim {
             stream_id,
-            cert_path,
             fee,
-            mainnet,
+            testnet11,
             hardened,
             max_derivations,
         } => {
-            let cert_path = expand_tilde(cert_path)?;
-
-            let cli = if mainnet {
-                CoinsetClient::mainnet()
-            } else {
+            let cli = if testnet11 {
                 CoinsetClient::testnet11()
+            } else {
+                CoinsetClient::mainnet()
             };
 
             println!("Fetching latest unspent coin...");
@@ -706,8 +702,8 @@ async fn main() -> Result<(), CliError> {
             let latest_streamed_coin = sync_stream(
                 stream_id,
                 &cli,
-                if mainnet { "stream" } else { "tstream" },
-                if mainnet { "xch" } else { "txch" },
+                if testnet11 { "tstream" } else { "stream" },
+                if testnet11 { "txch" } else { "xch" },
                 true,
                 false,
             )
@@ -730,7 +726,7 @@ async fn main() -> Result<(), CliError> {
 
             let recipient = latest_streamed_coin.recipient;
             let recipient_address =
-                encode_address(recipient.into(), if mainnet { "xch" } else { "txch" }).map_err(
+                encode_address(recipient.into(), if testnet11 { "txch" } else { "xch" }).map_err(
                     |e| {
                         eprintln!("Failed to encode address: {}", e);
                         CliError::InvalidStreamId()
@@ -741,15 +737,10 @@ async fn main() -> Result<(), CliError> {
                 recipient_address
             );
 
-            let cert_file = cert_path.join("wallet.crt");
-            let key_file = cert_path.join("wallet.key");
-
-            let sage_client =
-                SageClient::new(&cert_file, &key_file, "https://localhost:9257".to_string())
-                    .map_err(|e| {
-                        eprintln!("Failed to create Sage client: {}", e);
-                        CliError::HomeDirectoryNotFound
-                    })?;
+            let sage_client = SageClient::new().map_err(|e| {
+                eprintln!("Failed to create Sage client: {}", e);
+                CliError::HomeDirectoryNotFound
+            })?;
             let public_key =
                 get_public_key(&sage_client, &recipient_address, max_derivations, hardened).await?;
 
@@ -772,18 +763,15 @@ async fn main() -> Result<(), CliError> {
         }
         Commands::Clawback {
             stream_id,
-            cert_path,
             fee,
-            mainnet,
+            testnet11,
             hardened,
             max_derivations,
         } => {
-            let cert_path = expand_tilde(cert_path)?;
-
-            let cli = if mainnet {
-                CoinsetClient::mainnet()
-            } else {
+            let cli = if testnet11 {
                 CoinsetClient::testnet11()
+            } else {
+                CoinsetClient::mainnet()
             };
 
             println!("Fetching latest unspent coin...");
@@ -791,8 +779,8 @@ async fn main() -> Result<(), CliError> {
             let latest_streamed_coin = sync_stream(
                 stream_id,
                 &cli,
-                if mainnet { "stream" } else { "tstream" },
-                if mainnet { "xch" } else { "txch" },
+                if testnet11 { "tstream" } else { "stream" },
+                if testnet11 { "txch" } else { "xch" },
                 true,
                 false,
             )
@@ -822,26 +810,20 @@ async fn main() -> Result<(), CliError> {
                 return Err(CliError::InvalidStreamId());
             };
             let clawback_address =
-                encode_address(clawback_ph.into(), if mainnet { "xch" } else { "txch" }).map_err(
-                    |e| {
+                encode_address(clawback_ph.into(), if testnet11 { "txch" } else { "xch" })
+                    .map_err(|e| {
                         eprintln!("Failed to encode address: {}", e);
                         CliError::InvalidStreamId()
-                    },
-                )?;
+                    })?;
             println!(
                 "Searching for key associated with address: {}",
                 clawback_address
             );
 
-            let cert_file = cert_path.join("wallet.crt");
-            let key_file = cert_path.join("wallet.key");
-
-            let sage_client =
-                SageClient::new(&cert_file, &key_file, "https://localhost:9257".to_string())
-                    .map_err(|e| {
-                        eprintln!("Failed to create Sage client: {}", e);
-                        CliError::HomeDirectoryNotFound
-                    })?;
+            let sage_client = SageClient::new().map_err(|e| {
+                eprintln!("Failed to create Sage client: {}", e);
+                CliError::HomeDirectoryNotFound
+            })?;
             let public_key =
                 get_public_key(&sage_client, &clawback_address, max_derivations, hardened).await?;
 
