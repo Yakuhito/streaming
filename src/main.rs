@@ -11,11 +11,9 @@ use chia_wallet_sdk::{
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use client::SageClient;
-use dirs::home_dir;
 use sage_api::{
     Amount, AssetKind, CoinJson, CoinSpendJson, GetDerivations, SendCat, SendXch, SignCoinSpends,
 };
-use std::path::{Path, PathBuf};
 use streaming::{StreamPuzzle2ndCurryArgs, StreamedCat};
 use thiserror::Error;
 
@@ -118,16 +116,6 @@ fn get_stream_prefix(testnet11: bool) -> String {
         "tstream".to_string()
     } else {
         "stream".to_string()
-    }
-}
-
-fn expand_tilde<P: AsRef<Path>>(path_str: P) -> Result<PathBuf, CliError> {
-    let path = path_str.as_ref();
-    if path.starts_with("~") {
-        let home = home_dir().ok_or(CliError::HomeDirectoryNotFound)?;
-        Ok(home.join(path.strip_prefix("~/").unwrap_or(path)))
-    } else {
-        Ok(path.to_path_buf())
     }
 }
 
@@ -256,12 +244,12 @@ async fn sync_stream(
             );
             println!(
                 "Recipient address: {}",
-                Address::new(new_stream.recipient.into(), prefix.clone()).encode()?
+                Address::new(new_stream.recipient, prefix.clone()).encode()?
             );
             println!(
                 "Clawback address: {}",
                 if let Some(clawback_ph) = new_stream.clawback_ph {
-                    Address::new(clawback_ph.into(), prefix.clone()).encode()?
+                    Address::new(clawback_ph, prefix.clone()).encode()?
                 } else {
                     "None".to_string()
                 }
@@ -675,7 +663,7 @@ async fn main() -> Result<(), CliError> {
                 CoinsetClient::mainnet()
             };
 
-            wait_for_coin(streaming_coin_id.into(), &cli, false).await?;
+            wait_for_coin(streaming_coin_id, &cli, false).await?;
             println!("Confimed! :)");
         }
         Commands::View {
@@ -733,7 +721,7 @@ async fn main() -> Result<(), CliError> {
 
             let recipient = latest_streamed_coin.recipient;
             let recipient_address =
-                Address::new(recipient.into(), get_address_prefix(testnet11)).encode()?;
+                Address::new(recipient, get_address_prefix(testnet11)).encode()?;
             println!(
                 "Searching for key associated with address: {}",
                 recipient_address
