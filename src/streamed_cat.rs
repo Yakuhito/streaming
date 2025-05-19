@@ -8,7 +8,8 @@ use chia::{
 };
 use chia_protocol::{Bytes, Bytes32, Coin};
 use chia_wallet_sdk::{
-    run_puzzle, CatLayer, Condition, Conditions, DriverError, Layer, Puzzle, Spend, SpendContext,
+    driver::{CatLayer, DriverError, Layer, Puzzle, Spend, SpendContext},
+    types::{run_puzzle, Condition, Conditions},
 };
 use clvm_traits::FromClvm;
 use clvm_utils::tree_hash;
@@ -303,12 +304,12 @@ impl StreamedCat {
 
 #[cfg(test)]
 mod tests {
-    use chia::{
-        consensus::gen::make_aggsig_final_message::u64_to_bytes, puzzles::standard::StandardArgs,
-    };
+    use chia::consensus::gen::make_aggsig_final_message::u64_to_bytes;
     use chia_protocol::Bytes;
-    use chia_wallet_sdk::{test_secret_key, Cat, Conditions, Simulator, StandardLayer};
-    use clvm_traits::ToClvm;
+    use chia_wallet_sdk::{
+        driver::{Cat, StandardLayer},
+        test::Simulator,
+    };
     use clvm_utils::tree_hash;
     use clvmr::serde::node_from_bytes;
 
@@ -334,19 +335,17 @@ mod tests {
         let total_claim_time = claim_intervals.iter().sum::<u64>() + clawback_offset;
 
         // Create CAT & launch vesting one
-        let user_sk = test_secret_key()?;
-        let user_p2 = StandardLayer::new(user_sk.public_key());
-        let user_puzzle_hash: Bytes32 = StandardArgs::curry_tree_hash(user_sk.public_key()).into();
+        let user_bls = sim.bls(0);
+        let user_p2 = StandardLayer::new(user_bls.pk);
 
         let payment_cat_amount = 1000;
-        let (minter_sk, minter_pk, _minter_puzzle_hash, minter_coin) =
-            sim.new_p2(payment_cat_amount)?;
-        let minter_p2 = StandardLayer::new(minter_pk);
+        let minter_bls = sim.bls(payment_cat_amount);
+        let minter_p2 = StandardLayer::new(minter_bls.pk);
 
         let clawback_puzzle_ptr = ctx.alloc(&1)?;
-        let clawback_ph = tree_hash(&ctx.allocator, clawback_puzzle_ptr);
+        let clawback_ph = ctx.tree_hash(clawback_puzzle_ptr);
         let streaming_inner_puzzle = StreamLayer::new(
-            user_puzzle_hash,
+            user_bls.puzzle_hash,
             Some(clawback_ph.into()),
             total_claim_time + 1000,
             1000,
@@ -354,15 +353,15 @@ mod tests {
         let streaming_inner_puzzle_hash: Bytes32 = streaming_inner_puzzle.puzzle_hash().into();
         let (issue_cat, eve_cat) = Cat::single_issuance_eve(
             ctx,
-            minter_coin.coin_id(),
+            minter_bls.coin.coin_id(),
             payment_cat_amount,
             Conditions::new().create_coin(streaming_inner_puzzle_hash, payment_cat_amount, None),
         )?;
-        minter_p2.spend(ctx, minter_coin, issue_cat)?;
+        minter_p2.spend(ctx, minter_bls.coin, issue_cat)?;
 
         let initial_vesting_cat =
             eve_cat.wrapped_child(streaming_inner_puzzle_hash, payment_cat_amount);
-        sim.spend_coins(ctx.take(), &[minter_sk.clone()])?;
+        sim.spend_coins(ctx.take(), &[minter_bls.sk.clone()])?;
         sim.set_next_timestamp(1000 + claim_intervals[0])?;
 
         // spend streaming CAT
@@ -370,7 +369,7 @@ mod tests {
             initial_vesting_cat.coin,
             initial_vesting_cat.asset_id,
             initial_vesting_cat.lineage_proof.unwrap(),
-            user_puzzle_hash,
+            user_bls.puzzle_hash,
             Some(clawback_ph.into()),
             total_claim_time + 1000,
             1000,
@@ -384,9 +383,13 @@ mod tests {
             }
 
             // to claim the payment, user needs to send a message to the streaming CAT
-            let user_coin = sim.new_coin(user_puzzle_hash, 0);
+            let user_coin = if i == 0 {
+                user_bls.coin
+            } else {
+                sim.new_coin(user_bls.puzzle_hash, 0)
+            };
             let message_to_send: Bytes = Bytes::new(u64_to_bytes(claim_time));
-            let coin_id_ptr = streamed_cat.coin.coin_id().to_clvm(&mut ctx.allocator)?;
+            let coin_id_ptr = ctx.alloc(&streamed_cat.coin.coin_id())?;
             user_p2.spend(
                 ctx,
                 user_coin,
@@ -397,19 +400,17 @@ mod tests {
 
             let spends = ctx.take();
             let streamed_cat_spend = spends.last().unwrap().clone();
-            sim.spend_coins(spends, &[user_sk.clone()])?;
+            sim.spend_coins(spends, &[user_bls.sk.clone()])?;
 
             // set up for next iteration
             if i < claim_intervals.len() - 1 {
                 claim_time += claim_intervals[i + 1];
             }
-            let parent_puzzle = streamed_cat_spend
-                .puzzle_reveal
-                .to_clvm(&mut ctx.allocator)?;
-            let parent_puzzle = Puzzle::from_clvm(&ctx.allocator, parent_puzzle)?;
-            let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
+            let parent_puzzle = ctx.alloc(&streamed_cat_spend.puzzle_reveal)?;
+            let parent_puzzle = Puzzle::from_clvm(ctx, parent_puzzle)?;
+            let parent_solution = ctx.alloc(&streamed_cat_spend.solution)?;
             let (Some(new_streamed_cat), clawback, _) = StreamedCat::from_parent_spend(
-                &mut ctx.allocator,
+                ctx,
                 streamed_cat.coin,
                 parent_puzzle,
                 parent_solution,
@@ -427,30 +428,22 @@ mod tests {
         let clawback_msg_coin = sim.new_coin(clawback_ph.into(), 0);
         let claim_time = sim.next_timestamp() + 1;
         let message_to_send: Bytes = Bytes::new(u64_to_bytes(claim_time));
-        let coin_id_ptr = streamed_cat.coin.coin_id().to_clvm(&mut ctx.allocator)?;
-        let solution = Conditions::new()
-            .send_message(23, message_to_send, vec![coin_id_ptr])
-            .to_clvm(&mut ctx.allocator)?;
+        let coin_id_ptr = ctx.alloc(&streamed_cat.coin.coin_id())?;
+        let solution =
+            ctx.alloc(&Conditions::new().send_message(23, message_to_send, vec![coin_id_ptr]))?;
         ctx.spend(clawback_msg_coin, Spend::new(clawback_puzzle_ptr, solution))?;
 
         streamed_cat.spend(ctx, claim_time, true)?;
 
         let spends = ctx.take();
         let streamed_cat_spend = spends.last().unwrap().clone();
-        sim.spend_coins(spends, &[user_sk.clone()])?;
+        sim.spend_coins(spends, &[user_bls.sk.clone()])?;
 
-        let parent_puzzle = streamed_cat_spend
-            .puzzle_reveal
-            .to_clvm(&mut ctx.allocator)?;
-        let parent_puzzle = Puzzle::from_clvm(&ctx.allocator, parent_puzzle)?;
-        let parent_solution = streamed_cat_spend.solution.to_clvm(&mut ctx.allocator)?;
+        let parent_puzzle = ctx.alloc(&streamed_cat_spend.puzzle_reveal)?;
+        let parent_puzzle = Puzzle::from_clvm(ctx, parent_puzzle)?;
+        let parent_solution = ctx.alloc(&streamed_cat_spend.solution)?;
         let (new_streamed_cat_maybe, clawback, _paid_amount_if_clawback) =
-            StreamedCat::from_parent_spend(
-                &mut ctx.allocator,
-                streamed_cat.coin,
-                parent_puzzle,
-                parent_solution,
-            )?;
+            StreamedCat::from_parent_spend(ctx, streamed_cat.coin, parent_puzzle, parent_solution)?;
 
         assert!(clawback);
         assert!(new_streamed_cat_maybe.is_none());

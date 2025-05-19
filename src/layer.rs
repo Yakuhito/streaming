@@ -203,6 +203,6 @@ impl Layer for StreamLayer {
         ctx: &mut SpendContext,
         solution: Self::Solution,
     ) -> Result<NodePtr, DriverError> {
-        StreamPuzzleSolution::to_clvm(&solution, ctx).map_err(DriverError::ToClvm)
+        ctx.alloc(&solution)
     }
 }
