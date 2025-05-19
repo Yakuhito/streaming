@@ -30,7 +30,7 @@
                 ; else
                 (list CREATE_COIN RECIPIENT to_pay (list RECIPIENT))
             )
-            (i (=  my_amount to_pay)
+            (i (= my_amount to_pay)
                 (list REMARK)
                 ; else
                 (list

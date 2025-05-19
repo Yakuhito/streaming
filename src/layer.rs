@@ -1,5 +1,10 @@
+use std::borrow::Cow;
+
 use chia_protocol::Bytes32;
-use chia_wallet_sdk::{CurriedPuzzle, DriverError, Layer, Mod, Puzzle, SpendContext};
+use chia_wallet_sdk::{
+    driver::{CurriedPuzzle, DriverError, Layer, Puzzle, SpendContext},
+    types::Mod,
+};
 use clvm_traits::{FromClvm, ToClvm};
 use clvm_utils::{CurriedProgram, ToTreeHash, TreeHash};
 use clvmr::{Allocator, NodePtr};
@@ -82,8 +87,13 @@ pub struct StreamPuzzleSolution {
 }
 
 impl Mod for StreamPuzzle1stCurryArgs {
-    const MOD_REVEAL: &[u8] = &STREAM_PUZZLE;
-    const MOD_HASH: TreeHash = STREAM_PUZZLE_HASH;
+    fn mod_reveal() -> Cow<'static, [u8]> {
+        Cow::Borrowed(&STREAM_PUZZLE)
+    }
+
+    fn mod_hash() -> TreeHash {
+        STREAM_PUZZLE_HASH
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,7 +194,7 @@ impl Layer for StreamLayer {
             program: puzzle_1st_curry,
             args: StreamPuzzle2ndCurryArgs::new(self_hash.into(), self.last_payment_time),
         }
-        .to_clvm(&mut ctx.allocator)
+        .to_clvm(ctx)
         .map_err(DriverError::ToClvm)
     }
 
@@ -193,6 +203,6 @@ impl Layer for StreamLayer {
         ctx: &mut SpendContext,
         solution: Self::Solution,
     ) -> Result<NodePtr, DriverError> {
-        StreamPuzzleSolution::to_clvm(&solution, &mut ctx.allocator).map_err(DriverError::ToClvm)
+        StreamPuzzleSolution::to_clvm(&solution, ctx).map_err(DriverError::ToClvm)
     }
 }

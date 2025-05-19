@@ -4,24 +4,24 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-chia-protocol = "0.17.0"
-clvm-traits = { version = "0.17.0", features = ["derive"] }
-clvm-utils = "0.17.0"
-hex-literal = "0.4.1"
-clvmr = "0.10.0"
-chia = "0.17.0"
-clap = { version = "4.5.27", features = ["derive"] }
+chia-protocol = "0.22.0"
+clvm-traits = { version = "0.22.0", features = ["derive"] }
+clvm-utils = "0.22.0"
+hex-literal = "1.0.0"
+clvmr = "0.13.1"
+chia = "0.22.0"
+clap = { version = "4.5.38", features = ["derive"] }
 hex = "0.4.3"
-thiserror = "2.0.11"
-dirs = "5.0"
-reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
-tokio = { version = "1.0", features = ["full"] }
-bech32 = "0.9.1"
-chrono = "0.4.39"
-indexmap = { version = "2.0", features = ["serde"] }
+thiserror = "2.0.12"
+dirs = "6.0.0"
+reqwest = { version = "0.12.15", features = ["json", "rustls-tls"] }
+tokio = { version = "1.45.0", features = ["full"] }
+bech32 = "0.11.0"
+chrono = "0.4.41"
+indexmap = { version = "2.9.0", features = ["serde"] }
 
-chia-wallet-sdk = { git = "https://github.com/xch-dev/chia-wallet-sdk.git", rev = "cf1080e3d30c061e4d8a62e36c41abf2ce2310bb" }
-sage-api = { version = "0.9.5", git = "https://github.com/xch-dev/sage.git" }
+chia-wallet-sdk = { version = "0.23.0", git = "https://github.com/xch-dev/chia-wallet-sdk.git"}
+sage-api = { version = "0.10.2", git = "https://github.com/xch-dev/sage.git" }
 
 [dev-dependencies]
 anyhow = "1.0.95"
