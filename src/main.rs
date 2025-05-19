@@ -4,7 +4,10 @@ use chia::{
 use chia_protocol::{Bytes, Bytes32, Coin, CoinSpend, Program};
 use chia_wallet_sdk::{
     coinset::{ChiaRpcClient, CoinsetClient},
-    driver::{DriverError, Layer, Puzzle, SpendContext, StandardLayer},
+    driver::{
+        DriverError, Layer, Puzzle, SpendContext, StandardLayer, StreamPuzzle2ndCurryArgs,
+        StreamedCat, StreamingPuzzleInfo,
+    },
     types::Conditions,
     utils::{Address, AddressError},
 };
@@ -14,7 +17,6 @@ use client::SageClient;
 use sage_api::{
     Amount, AssetKind, CoinJson, CoinSpendJson, GetDerivations, SendCat, SendXch, SignCoinSpends,
 };
-use streaming::{StreamPuzzle2ndCurryArgs, StreamedCat};
 use thiserror::Error;
 
 mod client;
@@ -244,11 +246,11 @@ async fn sync_stream(
             );
             println!(
                 "Recipient address: {}",
-                Address::new(new_stream.recipient, prefix.clone()).encode()?
+                Address::new(new_stream.info.recipient, prefix.clone()).encode()?
             );
             println!(
                 "Clawback address: {}",
-                if let Some(clawback_ph) = new_stream.clawback_ph {
+                if let Some(clawback_ph) = new_stream.info.clawback_ph {
                     Address::new(clawback_ph, prefix.clone()).encode()?
                 } else {
                     "None".to_string()
@@ -256,17 +258,17 @@ async fn sync_stream(
             );
             println!(
                 "Start time: {} (local: {})",
-                new_stream.last_payment_time,
+                new_stream.info.last_payment_time,
                 Local
-                    .timestamp_opt(new_stream.last_payment_time as i64, 0)
+                    .timestamp_opt(new_stream.info.last_payment_time as i64, 0)
                     .unwrap()
                     .format("%Y-%m-%d %H:%M:%S")
             );
             println!(
                 "End time: {} (local: {})",
-                new_stream.end_time,
+                new_stream.info.end_time,
                 Local
-                    .timestamp_opt(new_stream.end_time as i64, 0)
+                    .timestamp_opt(new_stream.info.end_time as i64, 0)
                     .unwrap()
                     .format("%Y-%m-%d %H:%M:%S")
             );
@@ -292,16 +294,18 @@ async fn sync_stream(
             );
             println!(
                 "Latest claim time: {} (local: {})",
-                latest_stream.last_payment_time,
+                latest_stream.info.last_payment_time,
                 Local
-                    .timestamp_opt(latest_stream.last_payment_time as i64, 0)
+                    .timestamp_opt(latest_stream.info.last_payment_time as i64, 0)
                     .unwrap()
                     .format("%Y-%m-%d %H:%M:%S")
             );
 
             if print_claimable {
                 let time_now = get_latest_timestamp(cli).await?;
-                let claimable = latest_stream.amount_to_be_paid(time_now);
+                let claimable = latest_stream
+                    .info
+                    .amount_to_be_paid(latest_stream.coin.amount, time_now);
                 println!("Claimable right now: {:.3} CATs", claimable as f64 / 1000.0);
             }
 
@@ -602,12 +606,13 @@ async fn main() -> Result<(), CliError> {
                 amount: Amount::Number(cat_amount),
                 fee: Amount::Number(parse_amount(fee, false)?),
                 memos: Some(
-                    StreamedCat::get_launch_hints(
+                    StreamingPuzzleInfo::new(
                         Bytes32::new(recipient_puzzle_hash.into()),
                         clawback_ph,
-                        start_timestamp,
                         end_timestamp,
+                        start_timestamp,
                     )
+                    .get_launch_hints()
                     .iter()
                     .map(|b| hex::encode(b.to_vec()))
                     .collect(),
@@ -708,18 +713,20 @@ async fn main() -> Result<(), CliError> {
             let latest_timestamp = get_latest_timestamp(&cli).await?;
 
             println!("Latest block timestamp: {}", latest_timestamp);
-            let claim_time = if latest_timestamp - 1 <= latest_streamed_coin.end_time {
+            let claim_time = if latest_timestamp - 1 <= latest_streamed_coin.info.end_time {
                 latest_timestamp - 1
             } else {
-                latest_streamed_coin.end_time
+                latest_streamed_coin.info.end_time
             };
-            let claim_amount = latest_streamed_coin.amount_to_be_paid(claim_time);
+            let claim_amount = latest_streamed_coin
+                .info
+                .amount_to_be_paid(latest_streamed_coin.coin.amount, claim_time);
 
             println!("Claim amount: {:.3} CATs", claim_amount as f64 / 1000.0);
             println!("Press 'Enter' to proceed");
             let _ = std::io::stdin().read_line(&mut String::new());
 
-            let recipient = latest_streamed_coin.recipient;
+            let recipient = latest_streamed_coin.info.recipient;
             let recipient_address =
                 Address::new(recipient, get_address_prefix(testnet11)).encode()?;
             println!(
@@ -780,12 +787,14 @@ async fn main() -> Result<(), CliError> {
             let latest_timestamp = get_latest_timestamp(&cli).await?;
 
             println!("Latest block timestamp: {}", latest_timestamp);
-            let claim_time = if latest_timestamp + 600 <= latest_streamed_coin.end_time {
+            let claim_time = if latest_timestamp + 600 <= latest_streamed_coin.info.end_time {
                 latest_timestamp + 600
             } else {
-                latest_streamed_coin.end_time
+                latest_streamed_coin.info.end_time
             };
-            let claim_amount = latest_streamed_coin.amount_to_be_paid(claim_time);
+            let claim_amount = latest_streamed_coin
+                .info
+                .amount_to_be_paid(latest_streamed_coin.coin.amount, claim_time);
 
             println!(
                 "Approx. claim amount: {:.3} CATs; Approx. return amount: {:.3} CATs",
@@ -795,7 +804,7 @@ async fn main() -> Result<(), CliError> {
             println!("Press 'Enter' to proceed");
             let _ = std::io::stdin().read_line(&mut String::new());
 
-            let Some(clawback_ph) = latest_streamed_coin.clawback_ph else {
+            let Some(clawback_ph) = latest_streamed_coin.info.clawback_ph else {
                 eprintln!("Stream cannot be clawed back :(");
                 return Err(CliError::InvalidStreamId());
             };
