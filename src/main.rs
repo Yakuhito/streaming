@@ -3,8 +3,10 @@ use chia::{
 };
 use chia_protocol::{Bytes, Bytes32, Coin, CoinSpend, Program};
 use chia_wallet_sdk::{
-    decode_address, encode_address, ChiaRpcClient, CoinsetClient, Conditions, DriverError, Layer,
-    Puzzle, SpendContext, StandardLayer,
+    coinset::{ChiaRpcClient, CoinsetClient},
+    driver::{DriverError, Layer, Puzzle, SpendContext, StandardLayer},
+    types::Conditions,
+    utils::AddressError,
 };
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
@@ -38,30 +40,26 @@ enum Commands {
         end_timestamp: u64,
         recipient: String,
         clawback_address: String,
-        #[arg(long, default_value = "~/.local/share/com.rigidnetwork.sage/ssl")]
-        cert_path: String,
         #[arg(long, default_value = "0.0001")]
         fee: String,
         #[arg(long, default_value_t = false)]
-        mainnet: bool,
+        testnet11: bool,
     },
 
     #[command(arg_required_else_help = true)]
     View {
         stream_id: String,
         #[arg(long, default_value_t = false)]
-        mainnet: bool,
+        testnet11: bool,
     },
 
     #[command(arg_required_else_help = true)]
     Claim {
         stream_id: String,
-        #[arg(long, default_value = "~/.local/share/com.rigidnetwork.sage/ssl")]
-        cert_path: String,
         #[arg(long, default_value = "0.0001")]
         fee: String,
         #[arg(long, default_value_t = false)]
-        mainnet: bool,
+        testnet11: bool,
         #[arg(long, default_value_t = false)]
         hardened: bool,
         #[arg(long, default_value = "10000")]
@@ -71,12 +69,10 @@ enum Commands {
     #[command(arg_required_else_help = true)]
     Clawback {
         stream_id: String,
-        #[arg(long, default_value = "~/.local/share/com.rigidnetwork.sage/ssl")]
-        cert_path: String,
         #[arg(long, default_value = "0.0001")]
         fee: String,
         #[arg(long, default_value_t = false)]
-        mainnet: bool,
+        testnet11: bool,
         #[arg(long, default_value_t = false)]
         hardened: bool,
         #[arg(long, default_value = "10000")]
@@ -95,7 +91,7 @@ enum CliError {
     #[error("Invalid amount: The amount is in XCH/CAT units, not mojos. Please include a '.' in the amount to indicate that you understand.")]
     InvalidAmount,
     #[error("Invalid address")]
-    Address(#[from] chia_wallet_sdk::AddressError),
+    Address(#[from] AddressError),
     #[error("Invalid stream id")]
     InvalidStreamId(),
     #[error("Failed to encode address")]
@@ -105,7 +101,7 @@ enum CliError {
     #[error("Coinset.org request failed")]
     Reqwest(#[from] reqwest::Error),
     #[error("Driver error")]
-    Driver(#[from] chia_wallet_sdk::DriverError),
+    Driver(#[from] DriverError),
     #[error("Hex decoding failed")]
     HexDecodingFailed(#[from] hex::FromHexError),
 }
@@ -214,18 +210,12 @@ async fn sync_stream(
             return Ok(None);
         };
 
-        let parent_puzzle = coin_solution
-            .puzzle_reveal
-            .to_clvm(&mut ctx.allocator)
-            .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-        let parent_solution = coin_solution
-            .solution
-            .to_clvm(&mut ctx.allocator)
-            .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
-        let parent_puzzle = Puzzle::parse(&ctx.allocator, parent_puzzle);
+        let parent_puzzle = ctx.alloc(&coin_solution.puzzle_reveal)?;
+        let parent_solution = ctx.alloc(&coin_solution.solution)?;
+        let parent_puzzle = Puzzle::parse(&ctx, parent_puzzle);
 
         let (new_stream, clawbacked, paid_amount_if_clawback) = StreamedCat::from_parent_spend(
-            &mut ctx.allocator,
+            &mut ctx,
             coin_record.coin,
             parent_puzzle,
             parent_solution,
@@ -431,7 +421,7 @@ async fn generate_spend_bundle(
             address: p2_address.to_string(),
             amount: Amount::Number(0),
             fee: Amount::Number(parse_amount(fee, false)?),
-            memos: vec![],
+            memos: None,
             auto_submit: false,
         })
         .await?;
@@ -494,11 +484,7 @@ async fn generate_spend_bundle(
     let lead_coin = Coin::new(lead_coin_parent, p2_puzzle_hash, 0);
 
     let message_to_send = Bytes::new(u64_to_bytes(claim_time));
-    let coin_id_ptr = latest_streamed_coin
-        .coin
-        .coin_id()
-        .to_clvm(&mut ctx.allocator)
-        .map_err(|e| CliError::Driver(DriverError::ToClvm(e)))?;
+    let coin_id_ptr = ctx.alloc(&latest_streamed_coin.coin.coin_id())?;
     p2.spend(
         &mut ctx,
         lead_coin,
