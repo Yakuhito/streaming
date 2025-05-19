@@ -6,12 +6,11 @@ use chia_wallet_sdk::{
     coinset::{ChiaRpcClient, CoinsetClient},
     driver::{DriverError, Layer, Puzzle, SpendContext, StandardLayer},
     types::Conditions,
-    utils::AddressError,
+    utils::{Address, AddressError},
 };
 use chrono::{Local, TimeZone};
 use clap::{Parser, Subcommand};
 use client::SageClient;
-use clvm_traits::ToClvm;
 use dirs::home_dir;
 use sage_api::{
     Amount, AssetKind, CoinJson, CoinSpendJson, GetDerivations, SendCat, SendXch, SignCoinSpends,
@@ -106,6 +105,22 @@ enum CliError {
     HexDecodingFailed(#[from] hex::FromHexError),
 }
 
+fn get_address_prefix(testnet11: bool) -> String {
+    if testnet11 {
+        "txch".to_string()
+    } else {
+        "xch".to_string()
+    }
+}
+
+fn get_stream_prefix(testnet11: bool) -> String {
+    if testnet11 {
+        "tstream".to_string()
+    } else {
+        "stream".to_string()
+    }
+}
+
 fn expand_tilde<P: AsRef<Path>>(path_str: P) -> Result<PathBuf, CliError> {
     let path = path_str.as_ref();
     if path.starts_with("~") {
@@ -146,19 +161,18 @@ fn parse_amount(amount: String, is_cat: bool) -> Result<u64, CliError> {
 async fn sync_stream(
     stream_id: String,
     cli: &CoinsetClient,
-    stream_prefix: &str,
-    prefix: &str,
+    stream_prefix: String,
+    prefix: String,
     print: bool,
     print_claimable: bool,
 ) -> Result<Option<StreamedCat>, CliError> {
     println!("Viewing stream with id {stream_id}");
 
-    let (stream_coin_id, decoded_stream_prefix) =
-        decode_address(&stream_id).map_err(|_| CliError::InvalidStreamId())?;
-    if decoded_stream_prefix != stream_prefix {
+    let stream_coin_id = Address::decode(&stream_id).map_err(|_| CliError::InvalidStreamId())?;
+    if stream_coin_id.prefix != stream_prefix {
         return Err(CliError::InvalidStreamId());
     }
-    let stream_coin_id = Bytes32::from(stream_coin_id);
+    let stream_coin_id = Bytes32::from(stream_coin_id.puzzle_hash);
 
     let mut first_run = true;
     let mut ctx = SpendContext::new();
@@ -242,12 +256,12 @@ async fn sync_stream(
             );
             println!(
                 "Recipient address: {}",
-                encode_address(new_stream.recipient.into(), prefix).unwrap()
+                Address::new(new_stream.recipient.into(), prefix.clone()).encode()?
             );
             println!(
                 "Clawback address: {}",
                 if let Some(clawback_ph) = new_stream.clawback_ph {
-                    encode_address(clawback_ph.into(), prefix).unwrap()
+                    Address::new(clawback_ph.into(), prefix.clone()).encode()?
                 } else {
                     "None".to_string()
                 }
@@ -543,20 +557,17 @@ async fn main() -> Result<(), CliError> {
                 CliError::HomeDirectoryNotFound
             })?;
 
-            let (recipient_puzzle_hash, _prefix) =
-                decode_address(&recipient).map_err(CliError::Address)?;
+            let recipient_puzzle_hash = Address::decode(&recipient)?.puzzle_hash;
             let clawback_ph: Option<Bytes32> = if clawback_address == "none" {
                 None
             } else {
-                let (clawback_ph, _prefix) =
-                    decode_address(&clawback_address).map_err(CliError::Address)?;
-                Some(clawback_ph.into())
+                Some(Address::decode(&clawback_address)?.puzzle_hash)
             };
             let cat_amount = parse_amount(amount, true)?;
 
             let asset_id: [u8; 32] = asset_id.try_into().map_err(|_| CliError::InvalidAssetId)?;
             let target_inner_puzzle_hash = StreamPuzzle2ndCurryArgs::curry_tree_hash(
-                Bytes32::new(recipient_puzzle_hash),
+                recipient_puzzle_hash,
                 clawback_ph,
                 end_timestamp,
                 start_timestamp,
@@ -590,11 +601,11 @@ async fn main() -> Result<(), CliError> {
             println!("Press Enter to continue...");
             let _ = std::io::stdin().read_line(&mut String::new());
 
-            let streaming_cat_address = encode_address(
+            let streaming_cat_address = Address::new(
                 target_inner_puzzle_hash.into(),
-                if testnet11 { "txch" } else { "xch" },
+                get_address_prefix(testnet11),
             )
-            .map_err(CliError::EncodeAddress)?;
+            .encode()?;
 
             println!("Sending CAT...");
             let send_cat_request = SendCat {
@@ -604,7 +615,7 @@ async fn main() -> Result<(), CliError> {
                 fee: Amount::Number(parse_amount(fee, false)?),
                 memos: Some(
                     StreamedCat::get_launch_hints(
-                        Bytes32::new(recipient_puzzle_hash),
+                        Bytes32::new(recipient_puzzle_hash.into()),
                         clawback_ph,
                         start_timestamp,
                         end_timestamp,
@@ -654,11 +665,7 @@ async fn main() -> Result<(), CliError> {
                 .map_err(|_| CliError::UnknownStreamingCoinId)?;
             println!(
                 "Stream id: {}",
-                encode_address(
-                    streaming_coin_id,
-                    if testnet11 { "tstream" } else { "stream" }
-                )
-                .unwrap()
+                Address::new(streaming_coin_id, get_stream_prefix(testnet11)).encode()?
             );
 
             println!("Waiting for mempool item to be confirmed...");
@@ -680,8 +687,8 @@ async fn main() -> Result<(), CliError> {
             } else {
                 CoinsetClient::mainnet()
             };
-            let stream_prefix = if testnet11 { "tstream" } else { "stream" };
-            let prefix = if testnet11 { "txch" } else { "xch" };
+            let stream_prefix = get_stream_prefix(testnet11);
+            let prefix = get_address_prefix(testnet11);
             let _ = sync_stream(stream_id, &cli, stream_prefix, prefix, true, true).await?;
         }
         Commands::Claim {
@@ -702,8 +709,8 @@ async fn main() -> Result<(), CliError> {
             let latest_streamed_coin = sync_stream(
                 stream_id,
                 &cli,
-                if testnet11 { "tstream" } else { "stream" },
-                if testnet11 { "txch" } else { "xch" },
+                get_stream_prefix(testnet11),
+                get_address_prefix(testnet11),
                 true,
                 false,
             )
@@ -726,12 +733,7 @@ async fn main() -> Result<(), CliError> {
 
             let recipient = latest_streamed_coin.recipient;
             let recipient_address =
-                encode_address(recipient.into(), if testnet11 { "txch" } else { "xch" }).map_err(
-                    |e| {
-                        eprintln!("Failed to encode address: {}", e);
-                        CliError::InvalidStreamId()
-                    },
-                )?;
+                Address::new(recipient.into(), get_address_prefix(testnet11)).encode()?;
             println!(
                 "Searching for key associated with address: {}",
                 recipient_address
@@ -779,8 +781,8 @@ async fn main() -> Result<(), CliError> {
             let latest_streamed_coin = sync_stream(
                 stream_id,
                 &cli,
-                if testnet11 { "tstream" } else { "stream" },
-                if testnet11 { "txch" } else { "xch" },
+                get_stream_prefix(testnet11),
+                get_address_prefix(testnet11),
                 true,
                 false,
             )
@@ -810,11 +812,7 @@ async fn main() -> Result<(), CliError> {
                 return Err(CliError::InvalidStreamId());
             };
             let clawback_address =
-                encode_address(clawback_ph.into(), if testnet11 { "txch" } else { "xch" })
-                    .map_err(|e| {
-                        eprintln!("Failed to encode address: {}", e);
-                        CliError::InvalidStreamId()
-                    })?;
+                Address::new(clawback_ph, get_address_prefix(testnet11)).encode()?;
             println!(
                 "Searching for key associated with address: {}",
                 clawback_address
